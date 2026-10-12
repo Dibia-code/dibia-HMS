@@ -48,7 +48,13 @@ export default function Register() {
         const result = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(result.message || 'Could not create hospital account')
         if (result.status === 'pending') {
-          navigate('/approval-pending', { replace: true, state: { email, hospitalName: form.hospital.trim() } })
+          navigate('/approval-pending', {
+            replace: true,
+            state: {
+              email: result.user?.email || email,
+              hospitalName: result.tenant?.name || form.hospital.trim(),
+            },
+          })
           return
         }
         const tenant = result.tenant

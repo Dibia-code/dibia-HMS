@@ -297,8 +297,13 @@ function seedPlatform() {
   const bootstrapEmail = String(process.env.CONSOLE_ADMIN_EMAIL || process.env.PLATFORM_ADMIN_EMAIL || '').trim().toLowerCase()
   const bootstrapPassword = String(process.env.CONSOLE_ADMIN_PASSWORD || process.env.PLATFORM_ADMIN_PASSWORD || '')
   if (bootstrapEmail && bootstrapPassword.length >= 12) {
-    const platformUser = db.prepare('INSERT INTO platform_users (id, name, email, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at, active = 1')
-    platformUser.run('platform_admin_bootstrap', 'Dibia Platform Super Admin', bootstrapEmail, bcrypt.hashSync(bootstrapPassword, 12), json(['platform_super_admin']), timestamp, timestamp)
+    const hash = bcrypt.hashSync(bootstrapPassword, 12)
+    const existing = db.prepare('SELECT id FROM platform_users WHERE id = ? OR lower(email) = ?').get('platform_admin_bootstrap', bootstrapEmail)
+    if (existing) {
+      db.prepare('UPDATE platform_users SET email = ?, password_hash = ?, roles_json = ?, active = 1, updated_at = ? WHERE id = ?').run(bootstrapEmail, hash, json(['platform_super_admin']), timestamp, existing.id)
+    } else {
+      db.prepare('INSERT INTO platform_users (id, name, email, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run('platform_admin_bootstrap', 'Dibia Platform Super Admin', bootstrapEmail, hash, json(['platform_super_admin']), timestamp, timestamp)
+    }
   }
 
   const modules = [
@@ -455,14 +460,14 @@ async function firebaseRefresh(rawRefreshToken) {
 }
 
 async function firestoreHospitalSession(idToken) {
-  const auth = getFirebaseAuth()
-  const decoded = await auth.verifyIdToken(idToken)
-  const db = getFirestoreStore()
-  const profileSnapshot = await db.collection('staffProfiles').doc(decoded.uid).get()
+  const firebaseAuth = getFirebaseAuth()
+  const decoded = await firebaseAuth.verifyIdToken(idToken)
+  const store = getFirestoreStore()
+  const profileSnapshot = await store.collection('staffProfiles').doc(decoded.uid).get()
   if (!profileSnapshot.exists) throw new Error('Hospital account profile not found')
   const profile = { id: decoded.uid, ...profileSnapshot.data() }
   if (profile.active === false) throw new Error('This account is deactivated')
-  const tenantSnapshot = await db.collection('tenants').doc(profile.tenantId).get()
+  const tenantSnapshot = await store.collection('tenants').doc(profile.tenantId).get()
   if (!tenantSnapshot.exists) throw new Error('Hospital tenant not found')
   const tenant = { id: tenantSnapshot.id, ...tenantSnapshot.data() }
   if (['pending', 'rejected', 'suspended'].includes(tenant.status)) {
@@ -518,11 +523,11 @@ function auth(req, res, next) {
     }
     const staff = db.prepare('SELECT roles_json, perm_grants_json, perm_denies_json, branch_id, active FROM staff WHERE id = ? AND tenant_id = ?').get(req.auth.sub, req.auth.tenantId)
     if (!staff || !staff.active) return res.status(401).json({ message: 'Hospital account is inactive' })
-  const tenant = db.prepare('SELECT status FROM tenants WHERE id = ?').get(req.auth.tenantId)
-  if (!tenant || tenant.status !== 'active') return res.status(403).json({
-    code: tenant?.status === 'pending' ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE',
-    message: tenant?.status === 'pending' ? 'Hospital registration is awaiting approval' : 'Hospital workspace is not active',
-  })
+    const tenant = db.prepare('SELECT status FROM tenants WHERE id = ?').get(req.auth.tenantId)
+    if (!tenant || tenant.status !== 'active') return res.status(403).json({
+      code: tenant?.status === 'pending' ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE',
+      message: tenant?.status === 'pending' ? 'Hospital registration is awaiting approval' : 'Hospital workspace is not active',
+    })
     req.auth.roles = parse(staff.roles_json, [])
     req.auth.permGrants = parse(staff.perm_grants_json, [])
     req.auth.permDenies = parse(staff.perm_denies_json, [])
@@ -595,34 +600,34 @@ app.post('/auth/register', limitAuthAttempts, asyncRoute(async (req, res) => {
     return res.status(201).json({ status: 'pending', message: 'Registration received. A Dibia administrator must approve your hospital before you can sign in.', ...publicSession(staff, tenant, branch) })
   }
 
-  const db = getFirestoreStore()
-  const auth = getFirebaseAuth()
+  const store = getFirestoreStore()
+  const firebaseAuth = getFirebaseAuth()
   let userRecord
   try {
-    userRecord = await auth.createUser({ email, password, displayName: ownerName, phoneNumber: /^\+[1-9]\d{7,14}$/.test(phone) ? phone : undefined })
+    userRecord = await firebaseAuth.createUser({ email, password, displayName: ownerName, phoneNumber: /^\+[1-9]\d{7,14}$/.test(phone) ? phone : undefined })
     const tenantId = id('tenant')
     const baseSlug = hospitalName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `hospital-${tenantId.slice(-6)}`
     let slug = baseSlug
-    for (let suffix = 2; (await db.collection('tenantSlugs').doc(slug).get()).exists; suffix += 1) slug = `${baseSlug}-${suffix}`.slice(0, 50)
+    for (let suffix = 2; (await store.collection('tenantSlugs').doc(slug).get()).exists; suffix += 1) slug = `${baseSlug}-${suffix}`.slice(0, 50)
     const branchId = id('branch')
     const createdAt = now()
     const tenant = { slug, name: hospitalName, address, phone, status: 'pending', createdAt: now() }
     const branch = { id: branchId, tenantId, name: 'Main Branch', address, createdAt }
     const profile = { id: userRecord.uid, tenantId, branchId, name: ownerName, email, phone, roles: ['facility_admin'], profession: 'Hospital administrator', active: true, createdAt }
-    const tenantDoc = db.collection('tenants').doc(tenantId)
+    const tenantDoc = store.collection('tenants').doc(tenantId)
     const records = [
       { entity: 'hospitals', recordId: tenantId, payload: { id: tenantId, hospitalId: tenantId, slug, name: hospitalName, address, phone, status: 'pending', createdAt } },
       { entity: 'branches', recordId: branchId, payload: { id: branchId, hospitalId: tenantId, branchId, name: branch.name, address, isMain: true, createdAt } },
       { entity: 'staff', recordId: userRecord.uid, payload: { id: userRecord.uid, hospitalId: tenantId, branchId, name: ownerName, email, phone, active: true, profession: profile.profession, createdAt } },
       { entity: 'staff_roles', recordId: `${userRecord.uid}__facility_admin`, payload: { id: `${userRecord.uid}__facility_admin`, hospitalId: tenantId, staffId: userRecord.uid, role: 'facility_admin' } },
     ]
-    await db.runTransaction(async (transaction) => {
-      const slugRef = db.collection('tenantSlugs').doc(slug)
+    await store.runTransaction(async (transaction) => {
+      const slugRef = store.collection('tenantSlugs').doc(slug)
       if ((await transaction.get(slugRef)).exists) throw new Error('HOSPITAL_SLUG_EXISTS')
       transaction.set(tenantDoc, tenant)
       transaction.set(tenantDoc.collection('branches').doc(branchId), branch)
       transaction.set(tenantDoc.collection('staff').doc(userRecord.uid), profile)
-      transaction.set(db.collection('staffProfiles').doc(userRecord.uid), profile)
+      transaction.set(store.collection('staffProfiles').doc(userRecord.uid), profile)
       transaction.set(slugRef, { tenantId, createdAt })
       transaction.set(tenantDoc.collection('subscriptions').doc('current'), { id: `sub_${tenantId}`, tenantId, plan: 'Freemium', amountMinor: 0, status: 'pending', startsAt: createdAt, createdAt, updatedAt: createdAt })
       let sequence = 0
@@ -633,10 +638,10 @@ app.post('/auth/register', limitAuthAttempts, asyncRoute(async (req, res) => {
       }
       transaction.set(tenantDoc.collection('meta').doc('sync'), { lastSequence: sequence, updatedAt: createdAt })
     })
-    await auth.setCustomUserClaims(userRecord.uid, { aud: 'hospital', tenantId, roles: profile.roles })
+    await firebaseAuth.setCustomUserClaims(userRecord.uid, { aud: 'hospital', tenantId, roles: profile.roles })
     res.status(201).json({ status: 'pending', message: 'Registration received. A Dibia administrator must approve your hospital before you can sign in.', tenant: { id: tenantId, ...tenant }, user: { id: profile.id, name: profile.name, email: profile.email }, branch })
   } catch (error) {
-    if (userRecord?.uid) await auth.deleteUser(userRecord.uid).catch(() => {})
+    if (userRecord?.uid) await firebaseAuth.deleteUser(userRecord.uid).catch(() => {})
     if (String(error.message).includes('EMAIL_EXISTS')) return res.status(409).json({ message: 'An account with that email already exists' })
     return res.status(400).json({ message: production ? 'Could not create hospital account' : error.message || 'Could not create hospital account' })
   }
@@ -674,13 +679,34 @@ app.post('/auth/login', limitAuthAttempts, (req, res) => {
   })
   const branch = staff.branch_id ? db.prepare('SELECT * FROM branches WHERE id = ?').get(staff.branch_id) : null
   const refreshToken = createRefreshSession(staff.id)
-    setRefreshCookie(res, refreshToken)
+  setRefreshCookie(res, refreshToken)
   recordAudit(staff.tenant_id, staff.id, 'auth.login', 'staff', staff.id)
   res.json({ accessToken: issueAccess(staff), ...publicSession(staff, tenant, branch) })
 })
 
 app.post('/auth/refresh', (req, res) => {
   const raw = req.cookies.dibia_refresh
+
+  function continueRefreshWithSqlite() {
+    const platformSession = raw ? db.prepare('SELECT * FROM platform_refresh_sessions WHERE token_hash = ? AND expires_at > ?').get(sha256(raw), now()) : null
+    if (platformSession) {
+      const platformUser = db.prepare('SELECT * FROM platform_users WHERE id = ? AND active = 1').get(platformSession.platform_user_id)
+      if (!platformUser) return res.status(401).json({ message: 'Platform account is inactive' })
+      db.prepare('DELETE FROM platform_refresh_sessions WHERE id = ?').run(platformSession.id)
+      setRefreshCookie(res, createPlatformRefreshSession(platformUser.id))
+      return res.json({ accessToken: issuePlatformAccess(platformUser), user: { id: platformUser.id, name: platformUser.name, email: platformUser.email, roles: parse(platformUser.roles_json, []) } })
+    }
+    const session = raw ? db.prepare('SELECT * FROM refresh_sessions WHERE token_hash = ? AND expires_at > ?').get(sha256(raw), now()) : null
+    if (!session) return res.status(401).json({ message: 'Refresh session expired' })
+    const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(session.staff_id)
+    if (!staff || !staff.active) return res.status(401).json({ message: 'Hospital account is inactive' })
+    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(staff.tenant_id)
+    const branch = staff.branch_id ? db.prepare('SELECT * FROM branches WHERE id = ?').get(staff.branch_id) : null
+    db.prepare('DELETE FROM refresh_sessions WHERE id = ?').run(session.id)
+    setRefreshCookie(res, createRefreshSession(staff.id))
+    return res.json({ accessToken: issueAccess(staff), ...publicSession(staff, tenant, branch) })
+  }
+
   if (raw && firestoreStatus().enabled) {
     return firebaseRefresh(raw)
       .then(async (refreshed) => {
@@ -696,26 +722,6 @@ app.post('/auth/refresh', (req, res) => {
       })
   }
   return continueRefreshWithSqlite()
-
-  function continueRefreshWithSqlite() {
-  const platformSession = raw ? db.prepare('SELECT * FROM platform_refresh_sessions WHERE token_hash = ? AND expires_at > ?').get(sha256(raw), now()) : null
-  if (platformSession) {
-    const platformUser = db.prepare('SELECT * FROM platform_users WHERE id = ? AND active = 1').get(platformSession.platform_user_id)
-    if (!platformUser) return res.status(401).json({ message: 'Platform account is inactive' })
-    db.prepare('DELETE FROM platform_refresh_sessions WHERE id = ?').run(platformSession.id)
-    setRefreshCookie(res, createPlatformRefreshSession(platformUser.id))
-    return res.json({ accessToken: issuePlatformAccess(platformUser), user: { id: platformUser.id, name: platformUser.name, email: platformUser.email, roles: parse(platformUser.roles_json, []) } })
-  }
-  const session = raw ? db.prepare('SELECT * FROM refresh_sessions WHERE token_hash = ? AND expires_at > ?').get(sha256(raw), now()) : null
-  if (!session) return res.status(401).json({ message: 'Refresh session expired' })
-  const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(session.staff_id)
-  if (!staff || !staff.active) return res.status(401).json({ message: 'Hospital account is inactive' })
-  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(staff.tenant_id)
-  const branch = staff.branch_id ? db.prepare('SELECT * FROM branches WHERE id = ?').get(staff.branch_id) : null
-  db.prepare('DELETE FROM refresh_sessions WHERE id = ?').run(session.id)
-  setRefreshCookie(res, createRefreshSession(staff.id))
-  res.json({ accessToken: issueAccess(staff), ...publicSession(staff, tenant, branch) })
-  }
 })
 
 app.post('/auth/logout', (req, res) => {
@@ -762,10 +768,10 @@ app.post('/auth/console/logout', (req, res) => {
 
 app.get('/me', auth, asyncRoute(async (req, res) => {
   if (firestoreStatus().enabled) {
-    const db = getFirestoreStore()
+    const store = getFirestoreStore()
     const [profileSnapshot, tenantSnapshot] = await Promise.all([
-      db.collection('staffProfiles').doc(req.auth.sub).get(),
-      db.collection('tenants').doc(req.auth.tenantId).get(),
+      store.collection('staffProfiles').doc(req.auth.sub).get(),
+      store.collection('tenants').doc(req.auth.tenantId).get(),
     ])
     if (!profileSnapshot.exists || !tenantSnapshot.exists) return res.status(404).json({ message: 'Account not found' })
     const profile = { id: profileSnapshot.id, ...profileSnapshot.data() }
@@ -787,12 +793,12 @@ function platformAudit(platformUserId, action, entity, recordId, metadata = {}) 
 
 async function firestoreTenantSummary(snapshot) {
   const tenant = { id: snapshot.id, ...snapshot.data() }
-  const root = getFirestoreStore().collection('tenants').doc(snapshot.id)
+  const tenantRoot = getFirestoreStore().collection('tenants').doc(snapshot.id)
   const [branches, staff, subscription, moduleDocs] = await Promise.all([
-    root.collection('branches').get(),
-    root.collection('staff').get(),
-    root.collection('subscriptions').doc('current').get(),
-    root.collection('tenantModules').where('status', '==', 'enabled').get(),
+    tenantRoot.collection('branches').get(),
+    tenantRoot.collection('staff').get(),
+    tenantRoot.collection('subscriptions').doc('current').get(),
+    tenantRoot.collection('tenantModules').where('status', '==', 'enabled').get(),
   ])
   const billing = subscription.exists ? subscription.data() : null
   return {
@@ -1062,9 +1068,8 @@ app.post('/platform/tenants/:tenantId/users', platformAuth, asyncRoute(async (re
       const timestamp = now()
       const profile = { id: userRecord.uid, tenantId: tenant.id, branchId, name, email, phone: String(req.body?.phone || ''), roles: [role], profession: role, active: true, createdAt: timestamp }
       const roleId = `${userRecord.uid}__${role}`
-      const root = tenantRef
       await getFirestoreStore().runTransaction(async (transaction) => {
-        const seqRef = root.collection('meta').doc('sync')
+        const seqRef = tenantRef.collection('meta').doc('sync')
         const seqSnap = await transaction.get(seqRef)
         let sequence = Number(seqSnap.data()?.lastSequence || 0)
         const items = [
@@ -1073,11 +1078,11 @@ app.post('/platform/tenants/:tenantId/users', platformAuth, asyncRoute(async (re
         ]
         for (const item of items) {
           sequence += 1
-          transaction.set(root.collection('records').doc(`${item.entity}__${item.recordId}`), { ...item, tenantId: tenant.id, deleted: false, updatedAt: timestamp })
-          transaction.set(root.collection('syncChanges').doc(String(sequence)), { sequence, entity: item.entity, recordId: item.recordId, operation: 'create', payload: item.payload, createdAt: timestamp })
+          transaction.set(tenantRef.collection('records').doc(`${item.entity}__${item.recordId}`), { ...item, tenantId: tenant.id, deleted: false, updatedAt: timestamp })
+          transaction.set(tenantRef.collection('syncChanges').doc(String(sequence)), { sequence, entity: item.entity, recordId: item.recordId, operation: 'create', payload: item.payload, createdAt: timestamp })
         }
         transaction.set(seqRef, { lastSequence: sequence, updatedAt: timestamp }, { merge: true })
-        transaction.set(root.collection('staff').doc(userRecord.uid), profile)
+        transaction.set(tenantRef.collection('staff').doc(userRecord.uid), profile)
         transaction.set(getFirestoreStore().collection('staffProfiles').doc(userRecord.uid), profile)
       })
       await getFirebaseAuth().setCustomUserClaims(userRecord.uid, { aud: 'hospital', tenantId: tenant.id, roles: [role] })
@@ -1099,16 +1104,6 @@ app.post('/platform/tenants/:tenantId/users', platformAuth, asyncRoute(async (re
   const roles = [role]
   const timestamp = now()
   try {
-    if (firestoreStatus().enabled) {
-      const auth = getFirebaseAuth()
-      const userRecord = await auth.createUser({ email, password, displayName: name })
-      const profile = { id: userRecord.uid, tenantId: tenant.id, name, email, roles, profession: role, active: true, createdAt: timestamp }
-      await getFirestoreStore().collection('tenants').doc(tenant.id).collection('staff').doc(userRecord.uid).set(profile)
-      await getFirestoreStore().collection('staffProfiles').doc(userRecord.uid).set(profile)
-      await auth.setCustomUserClaims(userRecord.uid, { aud: 'hospital', tenantId: tenant.id, roles })
-      platformAudit(req.auth.sub, 'hospital.user.created', 'staff', userRecord.uid, { tenantId: tenant.id, role })
-      return res.status(201).json({ user: { ...profile, hospitalId: tenant.id, hospitalName: tenant.name } })
-    }
     const staffId = id('staff')
     db.prepare('INSERT INTO staff (id, tenant_id, branch_id, name, email, phone, profession, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
       staffId, tenant.id, null, name, email, String(req.body?.phone || ''), role, bcrypt.hashSync(password, 12), json(roles), timestamp, timestamp,
@@ -1116,7 +1111,7 @@ app.post('/platform/tenants/:tenantId/users', platformAuth, asyncRoute(async (re
     platformAudit(req.auth.sub, 'hospital.user.created', 'staff', staffId, { tenantId: tenant.id, role })
     return res.status(201).json({ user: { id: staffId, name, email, roles, active: true, hospitalId: tenant.id, hospitalName: tenant.name, createdAt: timestamp } })
   } catch (error) {
-    if (String(error.message).includes('EMAIL_EXISTS') || String(error.message).includes('UNIQUE')) return res.status(409).json({ message: 'An account with that email already exists' })
+    if (String(error.message).includes('UNIQUE')) return res.status(409).json({ message: 'An account with that email already exists' })
     return res.status(400).json({ message: production ? 'Could not create hospital account' : error.message || 'Could not create hospital account' })
   }
 }))
@@ -1469,11 +1464,11 @@ app.get('/sync', auth, async (req, res) => {
 
 app.get('/admin/summary', auth, requireRole('facility_admin', 'ceo_owner', 'super_admin'), asyncRoute(async (req, res) => {
   if (firestoreStatus().enabled) {
-    const db = getFirestoreStore()
+    const store = getFirestoreStore()
     const [tenantSnapshot, staffSnapshot, auditCountSnapshot] = await Promise.all([
-      db.collection('tenants').doc(req.auth.tenantId).get(),
-      db.collection('tenants').doc(req.auth.tenantId).collection('staff').get(),
-      db.collection('tenants').doc(req.auth.tenantId).collection('syncChanges').where('entity', '==', 'audit_log').count().get(),
+      store.collection('tenants').doc(req.auth.tenantId).get(),
+      store.collection('tenants').doc(req.auth.tenantId).collection('staff').get(),
+      store.collection('tenants').doc(req.auth.tenantId).collection('syncChanges').where('entity', '==', 'audit_log').count().get(),
     ])
     if (!tenantSnapshot.exists) return res.status(404).json({ message: 'Hospital workspace not found' })
     const tenant = { id: tenantSnapshot.id, slug: tenantSnapshot.data().slug, name: tenantSnapshot.data().name, logoUrl: tenantSnapshot.data().logoUrl || null }
