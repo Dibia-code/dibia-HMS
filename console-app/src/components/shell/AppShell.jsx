@@ -1,4 +1,5 @@
 import { Outlet } from 'react-router-dom'
+import { useState } from 'react'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { PageHeaderProvider, useHeaderState } from './pageHeaderContext'
@@ -17,12 +18,13 @@ function PageHead() {
 }
 
 export function AppShell() {
+  const [navOpen, setNavOpen] = useState(false)
   return (
     <PageHeaderProvider>
       <div className="app-shell">
-        <Sidebar />
+        <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
         <div className="main">
-          <Topbar />
+          <Topbar onMenu={() => setNavOpen((open) => !open)} menuOpen={navOpen} />
           <main className="content">
             <PageHead />
             <Outlet />

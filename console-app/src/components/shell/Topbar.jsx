@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '@/auth/AuthContext'
 import { useTheme } from '@/theme/ThemeContext'
+import { Icon } from '@/components/Icon'
 
 const OPTIONS = [
   { value: 'system', label: 'System default' },
@@ -23,7 +24,7 @@ function OnlineChip() {
   return (
     <div className={`online-chip ${online ? '' : 'offline'}`} role="status">
       <span className="dot" />
-      {online ? 'Online' : 'Offline. Reconnect to continue.'}
+      {online ? 'Online' : <><span className="online-full">Offline. Reconnect to continue.</span><span className="online-short">Offline</span></>}
     </div>
   )
 }
@@ -72,10 +73,13 @@ function ProfileMenu() {
   )
 }
 
-export function Topbar() {
+export function Topbar({ onMenu, menuOpen }) {
   const { user } = useAuth()
   return (
     <header className="module-bar">
+      <button type="button" className="mobile-menu-toggle" onClick={onMenu} aria-label={menuOpen ? 'Close navigation menu' : 'Open navigation menu'} aria-expanded={menuOpen}>
+        <Icon name="menu" />
+      </button>
       <div className="mb-module">Dibia HMS Super Admin</div>
       <div className="mb-right">
         <OnlineChip />

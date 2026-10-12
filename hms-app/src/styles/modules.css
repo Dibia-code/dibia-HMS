@@ -259,6 +259,27 @@
 .stat-link { display: block; color: inherit; cursor: pointer; }
 .stat-link:hover { background: var(--row-hover); }
 
+/* Narrow-screen safeguards for long forms, wizard steps and dashboard cards. */
+@media (max-width: 600px) {
+  .steps { overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+  .steps li { flex: 0 0 auto; }
+  .steps button { width: auto; min-width: 128px; }
+  .hw-grid, .sub-grid-2 { grid-template-columns: 1fr; }
+  .summary { grid-template-columns: 1fr; }
+  .row-between { align-items: flex-start; flex-wrap: wrap; }
+  .bill-line { align-items: flex-start; flex-wrap: wrap; }
+  .bill-line .grow { flex: 1 1 calc(100% - 52px); }
+  .bill-amt { margin-left: auto; }
+  .receipt-sheet { overflow-x: auto; }
+  .receipt-sheet .rc-meta { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 420px) {
+  .split-row, .rx-edit { grid-template-columns: 1fr; }
+  .result-row, .bill-pick { padding-inline: 12px; gap: 8px; }
+  .sum-block, .success-card { padding: 14px; }
+}
+
 .dash-link { color: inherit; }
 .dash-link:hover { background: var(--row-hover); }
 
