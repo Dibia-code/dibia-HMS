@@ -1,0 +1,29 @@
+# Dependencies (each app has its own node_modules)
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+dev-dist/
+
+# Local env files — never commit real secrets
+*.local
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln

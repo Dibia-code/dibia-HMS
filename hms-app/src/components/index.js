@@ -1,0 +1,28 @@
+// Barrel export for shared UI. Pages import from '@/components'.
+export { Icon, iconNames } from './Icon'
+
+export { Button } from './ui/Button'
+export { Card, CardHead } from './ui/Card'
+export { Pill, RoleBadge, RoleBadges } from './ui/Pill'
+export { Avatar } from './ui/Avatar'
+export { SectionLabel } from './ui/SectionLabel'
+export { StatCard, StatRow } from './ui/StatCard'
+export { EmptyState } from './ui/EmptyState'
+export { DataTable } from './ui/DataTable'
+export { FormGrid, Field, Input, Textarea, Select } from './ui/Field'
+export { FormPanel } from './ui/FormPanel'
+export { Switch } from './ui/Switch'
+export { Modal, ConfirmDialog } from './ui/Modal'
+export { OnlineButton } from './ui/OnlineButton'
+export { RoleChipPicker } from './ui/RoleChipPicker'
+export { SearchScanBar } from './ui/SearchScanBar'
+export { PayToggle } from './ui/PayToggle'
+
+export { ToastProvider, useToast } from './feedback/Toast'
+
+export { AppShell } from './shell/AppShell'
+export { Sidebar } from './shell/Sidebar'
+export { Topbar } from './shell/Topbar'
+export { SyncChip } from './shell/SyncChip'
+export { SyncBanner } from './shell/SyncBanner'
+export { usePageHeader } from './shell/usePageHeader'

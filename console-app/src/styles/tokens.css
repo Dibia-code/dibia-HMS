@@ -1,0 +1,147 @@
+/* Dibia design tokens, light and dark. Values follow the Design System v1.1;
+   the few that differ are noted inline (all for WCAG AA contrast).
+   Keep in sync with hospital-app/src/styles/tokens.css. */
+:root,
+.theme-light {
+  color-scheme: light;
+
+  --teal: #0B6E6E;
+  --teal-dark: #084F4F;
+  --teal-btn: #0B6E6E;
+  --teal-btn-hover: #084F4F;
+  --on-teal: #FFFFFF;
+  --amber: #E8A33D;
+  --bg: #F7F6F3;
+  --slate: #3A4148;
+  --hairline: #E5E3DE;
+
+  --critical: #D64545;
+  --confirmed: #3F9142;
+  --pending: #E8A33D;
+  --expiry: #F7C948;
+  --interaction: #B23A6B;
+
+  --mod-reception: #E8A33D;
+  --mod-cashier: #084F4F;
+  --mod-hospital: #2C7DA0;
+  --mod-admin: #3A4148;
+
+  --muted-1: #565C62;
+  --muted-2: #666C72;
+  --muted-3: #6B7076;
+  --muted-4: #B7BBBF;
+  --disabled-fg: #9AA0A5;
+  --disabled-bg: #E5E3DE;
+
+  --surface: #FFFFFF;
+  --surface-elevated: #FFFFFF;
+  --input-bg: #FBFAF8;
+  --row-hover: #F3F1EC;
+  --nav-active-bg: #0B6E6E;
+  --nav-active-fg: #FFFFFF;
+  --accent-tint: #EAF4F4;
+  --accent-tint-fg: #084F4F;
+  --overlay: rgba(20, 25, 24, 0.5);
+
+  --pill-active-bg: #E4F1E6;    --pill-active-fg: #2B6B2E;
+  --pill-pending-bg: #FDF0DA;   --pill-pending-fg: #8A5A0B;
+  --pill-failed-bg: #FBE4E4;    --pill-failed-fg: #A82E2E;
+  --pill-inactive-bg: #EFEEE9;  --pill-inactive-fg: #565C62;
+  --pill-expiry-bg: #FBEFB8;    --pill-expiry-fg: #6B5000;
+  --pill-interaction-bg: #F6E3EC; --pill-interaction-fg: #9A2F5E;
+  --pill-info-bg: #E6F0F5;      --pill-info-fg: #1F5F7D;
+
+  --sync-online-fg: #2B6B2E;
+  --sync-offline-fg: #8A5A0B;
+  --banner-warn-bg: #FDF0DA;    --banner-warn-border: #E8A33D;   --banner-warn-fg: #6B4508;
+  --banner-fail-bg: #FBE4E4;    --banner-fail-border: #D64545;   --banner-fail-fg: #8A2424;
+  --banner-ok-bg: #E4F1E6;      --banner-ok-border: #3F9142;     --banner-ok-fg: #21501F;
+
+  --font-ui: 'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-display: var(--font-ui);
+
+  --r-btn: 8px;
+  --r-card: 8px;
+  --r-pill: 20px;
+  --r-input: 8px;
+
+  --shadow-pop: 0 8px 24px rgba(20, 25, 24, 0.14);
+
+  --sb-bg: #084F4F;
+  --sb-fg: rgba(255, 255, 255, 0.78);
+  --sb-fg-strong: #ffffff;
+  --sb-hover-bg: rgba(255, 255, 255, 0.08);
+  --sb-active-bg: rgba(255, 255, 255, 0.16);
+  --sb-hairline: rgba(255, 255, 255, 0.14);
+  --sb-tag-fg: rgba(255, 255, 255, 0.65);
+  --on-amber: #2A1B00;
+
+  --sidebar-w: 240px;
+  --sidebar-w-collapsed: 72px;
+  --content-max: 1200px;
+  --header-h: 60px;
+  --tap: 48px;
+  --tap-lg: 56px;
+  --input-h: 52px;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --teal: #12A0A0;
+  --teal-dark: #0E7A7A;
+  --teal-btn: #0E7A7A;
+  --teal-btn-hover: #0B6E6E;
+  --on-teal: #FFFFFF;
+  --amber: #E8A33D;
+  --bg: #141918;
+  --slate: #C8C5BE;
+  --hairline: #2E3635;
+
+  --critical: #F26B6B;
+  --confirmed: #4EAD52;
+  --pending: #F0B554;
+  --expiry: #FAD85A;
+  --interaction: #D96A93;
+
+  --mod-reception: #E8A33D;
+  --mod-cashier: #12A0A0;
+  --mod-hospital: #4FA3C7;
+  --mod-admin: #A3A09A;
+
+  --muted-1: #B0ADA6;
+  --muted-2: #A3A09A;
+  --muted-3: #A19E98;
+  --muted-4: #4A5251;
+  --disabled-fg: #7A7773;
+  --disabled-bg: #232B2A;
+
+  --surface: #1E2625;
+  --surface-elevated: #283433;
+  --input-bg: #283433;
+  --row-hover: #283433;
+  --nav-active-bg: #0E7A7A;
+  --nav-active-fg: #FFFFFF;
+  --accent-tint: rgba(18, 160, 160, 0.16);
+  --accent-tint-fg: #7FD6D6;
+  --overlay: rgba(0, 0, 0, 0.5);
+
+  --pill-active-bg: rgba(78, 173, 82, 0.15);     --pill-active-fg: #62B966;
+  --pill-pending-bg: rgba(240, 181, 84, 0.15);   --pill-pending-fg: #F0B554;
+  --pill-failed-bg: rgba(242, 107, 107, 0.15);   --pill-failed-fg: #F58282;
+  --pill-inactive-bg: rgba(122, 119, 115, 0.15); --pill-inactive-fg: #A3A09A;
+  --pill-expiry-bg: rgba(250, 216, 90, 0.15);    --pill-expiry-fg: #FAD85A;
+  --pill-interaction-bg: rgba(212, 97, 138, 0.15); --pill-interaction-fg: #E07F9F;
+  --pill-info-bg: rgba(79, 163, 199, 0.15);      --pill-info-fg: #7FBEDB;
+
+  --sync-online-fg: #4EAD52;
+  --sync-offline-fg: #F0B554;
+  --banner-warn-bg: rgba(240, 181, 84, 0.12);    --banner-warn-border: #F0B554;   --banner-warn-fg: #F0B554;
+  --banner-fail-bg: rgba(242, 107, 107, 0.12);   --banner-fail-border: #F26B6B;   --banner-fail-fg: #F58282;
+  --banner-ok-bg: rgba(78, 173, 82, 0.12);       --banner-ok-border: #4EAD52;     --banner-ok-fg: #62B966;
+
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45);
+
+  --sb-bg: #0E2726;
+  --sb-active-bg: rgba(18, 160, 160, 0.28);
+}

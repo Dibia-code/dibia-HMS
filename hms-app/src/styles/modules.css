@@ -1,0 +1,271 @@
+/* Reception, queue, cashier and dashboard additions. */
+
+.stack-gap { display: flex; flex-direction: column; gap: 16px; }
+
+.steps { display: flex; gap: 8px; list-style: none; margin-bottom: 24px; }
+.steps li { flex: 1; }
+.steps button {
+  width: 100%;
+  min-height: var(--tap);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  border-bottom: 3px solid var(--hairline);
+  background: none;
+  color: var(--muted-2);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 4px;
+  text-align: left;
+}
+.steps button:disabled { cursor: default; }
+.steps .n {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--pill-inactive-bg); color: var(--pill-inactive-fg);
+  font-size: 13px; flex: none;
+}
+.steps li.current button { color: var(--slate); border-color: var(--teal); }
+.steps li.current .n { background: var(--teal-btn); color: var(--on-teal); }
+.steps li.done .n { background: var(--pill-active-bg); color: var(--pill-active-fg); }
+
+.result-row, .bill-pick {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-card);
+  cursor: pointer;
+  text-align: left;
+  color: var(--slate);
+  font-size: 15px;
+}
+.result-row:hover, .bill-pick:hover { background: var(--row-hover); }
+.result-row .grow, .bill-pick .grow { flex: 1; min-width: 0; }
+.result-row .r-title, .bill-pick .r-title { font-weight: 600; display: block; }
+.result-row .r-sub, .bill-pick .r-sub { font-size: 13px; color: var(--muted-2); display: block; margin-top: 2px; }
+.bill-pick { border-left-width: 4px; }
+.bill-amt { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.dup-card {
+  border: 1px solid var(--hairline);
+  background: var(--pill-expiry-bg);
+  border-radius: var(--r-card);
+  padding: 16px;
+  margin-bottom: 24px;
+  color: var(--slate);
+}
+.dup-card .row-line { border-color: var(--hairline); }
+
+.patient-photo {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--input-bg); border: 1px solid var(--hairline);
+  color: var(--muted-2);
+  display: grid; place-items: center; overflow: hidden; flex: none;
+}
+.patient-photo img { width: 100%; height: 100%; object-fit: cover; }
+.row .grow { flex: 1; min-width: 0; }
+
+.seg.two { grid-template-columns: repeat(2, 1fr); }
+
+.summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.sum-block { border: 1px solid var(--hairline); border-radius: var(--r-card); padding: 16px; }
+.sum-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted-2); margin-bottom: 8px;
+}
+.missing {
+  margin-top: 16px;
+  border: 1px solid var(--hairline);
+  border-left: 4px solid var(--pending);
+  border-radius: var(--r-card);
+  padding: 16px;
+}
+.flag { width: 10px; height: 10px; border-radius: 50%; background: var(--pending); flex: none; }
+
+.success-card { padding: 24px; }
+.success-mark {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: var(--pill-active-bg); color: var(--pill-active-fg);
+  display: grid; place-items: center; flex: none;
+}
+
+.count-badge {
+  background: var(--pill-inactive-bg); color: var(--pill-inactive-fg);
+  border-radius: 20px; padding: 0 10px; font-size: 12px; font-weight: 700;
+}
+.queue-group .section-label { margin-top: 24px; }
+.queue-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 12px 16px;
+}
+.q-name { font-weight: 600; font-size: 15px; }
+.q-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.q-actions { display: flex; gap: 8px; align-items: center; }
+.q-actions .select, .q-route .select { min-height: 44px; }
+
+.cashier-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.pay-card { position: sticky; top: calc(var(--header-h) + 24px); }
+.bill-lines { display: flex; flex-direction: column; }
+.bill-line { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--hairline); }
+.bill-line .r-title { font-weight: 500; display: block; }
+.bill-line .r-sub { font-size: 13px; color: var(--muted-2); display: block; }
+.bill-line .grow { flex: 1; min-width: 0; }
+.bill-totals { padding-top: 12px; display: flex; flex-direction: column; gap: 8px; font-variant-numeric: tabular-nums; }
+.bill-totals > div { display: flex; justify-content: space-between; color: var(--muted-1); }
+.bill-totals .strong { color: var(--slate); font-weight: 700; font-size: 17px; padding-top: 8px; border-top: 1px solid var(--hairline); }
+.bill-totals .due { font-weight: 700; font-size: 17px; }
+.bill-totals .due.owing { color: var(--pill-failed-fg); }
+.bill-totals .due.clear { color: var(--pill-active-fg); }
+.settled-note { padding: 14px 16px; border: 1px solid var(--hairline); border-radius: var(--r-card); font-size: 14px; }
+.split-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pay-problem {
+  margin-top: 16px; padding: 12px 14px; border-radius: var(--r-btn);
+  background: var(--pill-failed-bg); color: var(--pill-failed-fg);
+  font-size: 14px; font-weight: 500;
+}
+
+.receipt-sheet { font-size: 14px; color: var(--slate); }
+.receipt-sheet .rc-head { text-align: center; padding-bottom: 12px; border-bottom: 1px dashed var(--muted-4); margin-bottom: 12px; }
+.receipt-sheet .rc-fac { font-weight: 700; font-size: 17px; }
+.receipt-sheet .rc-meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 16px; margin-bottom: 12px; }
+.receipt-sheet .rc-meta div { display: flex; justify-content: space-between; gap: 8px; }
+.receipt-sheet .rc-meta span { color: var(--muted-2); }
+.receipt-sheet .rc-lines { width: 100%; border-collapse: collapse; margin: 8px 0; }
+.receipt-sheet .rc-lines th { text-align: left; font-size: 12px; text-transform: uppercase; color: var(--muted-2); padding: 6px 0; border-bottom: 1px dashed var(--muted-4); }
+.receipt-sheet .rc-lines td { padding: 6px 0; }
+.receipt-sheet .num { text-align: right; font-variant-numeric: tabular-nums; }
+.receipt-sheet .rc-totals { border-top: 1px dashed var(--muted-4); margin-top: 8px; padding-top: 8px; display: flex; flex-direction: column; gap: 4px; font-variant-numeric: tabular-nums; }
+.receipt-sheet .rc-totals > div { display: flex; justify-content: space-between; }
+.receipt-sheet .rc-totals .b { font-weight: 700; font-size: 16px; }
+.receipt-sheet .rc-totals .owed { color: var(--pill-failed-fg); font-weight: 600; }
+.receipt-sheet .rc-reason { margin-top: 12px; color: var(--muted-1); }
+.receipt-sheet .rc-foot { text-align: center; margin-top: 16px; color: var(--muted-2); }
+
+@media print {
+  body * { visibility: hidden; }
+  #receipt-print, #receipt-print * { visibility: visible; }
+  #receipt-print { position: absolute; left: 0; top: 0; width: 100%; color: #000; background: #fff; }
+  #receipt-print * { color: #000 !important; }
+}
+
+.stat-card.usage { grid-column: span 1; }
+.meter { margin-top: 12px; height: 28px; background: var(--input-bg); border: 1px solid var(--hairline); border-radius: 14px; overflow: hidden; }
+.meter-fill {
+  height: 100%;
+  display: flex; align-items: center; justify-content: flex-end;
+  padding: 0 10px;
+  background: var(--teal-btn);
+  color: var(--on-teal);
+  font-size: 12px; font-weight: 700;
+  border-radius: 14px;
+  min-width: 52px;
+}
+.meter-fill.warn { background: #B9770E; }
+.meter-fill.crit { background: #C0392B; }
+
+@media (max-width: 900px) {
+  .cashier-grid { grid-template-columns: 1fr; }
+  .pay-card { position: static; }
+  .queue-card { grid-template-columns: 1fr; gap: 10px; }
+  .q-actions { flex-wrap: wrap; }
+  .summary { grid-template-columns: 1fr; }
+}
+
+.inv-toolbar { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 16px; }
+.inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+.inv-card {
+  display: flex; flex-direction: column; gap: 8px; text-align: left;
+  background: var(--surface); color: var(--slate);
+  border: 1px solid var(--hairline); border-radius: var(--r-card);
+  padding: 16px; cursor: pointer; min-height: 168px;
+}
+.inv-card:hover { background: var(--row-hover); }
+.inv-card .ic-top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.inv-card .ic-name { font-weight: 600; font-size: 15px; }
+.inv-card .ic-gen { font-size: 13px; color: var(--muted-2); }
+.inv-card .ic-qty { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.inv-card .ic-qty small { font-size: 13px; font-weight: 500; color: var(--muted-2); }
+.inv-card .ic-meta { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--muted-1); margin-top: auto; }
+
+.rx-line { margin-bottom: 12px; padding: 16px 20px; }
+.rl-head { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+.rl-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.rl-flag {
+  margin-top: 12px; padding: 10px 14px; border-radius: var(--r-btn);
+  background: var(--pill-interaction-bg); color: var(--pill-interaction-fg);
+  border-left: 4px solid var(--interaction); font-size: 14px; font-weight: 500;
+}
+.rl-body { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+.rl-batch { font-size: 14px; color: var(--muted-1); }
+.rl-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.rl-actions .select { min-height: 48px; width: auto; max-width: 260px; }
+.rx-edit { display: grid; grid-template-columns: 2fr 1fr 1.2fr 1.2fr 0.7fr auto; gap: 8px; margin-bottom: 8px; }
+.approval-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.approval-list li { padding: 10px 14px; border-radius: var(--r-btn); border-left: 4px solid var(--pending); background: var(--pill-pending-bg); color: var(--pill-pending-fg); font-size: 14px; }
+.approval-list li.magenta { border-color: var(--interaction); background: var(--pill-interaction-bg); color: var(--pill-interaction-fg); }
+.approval-list li.red { border-color: var(--critical); background: var(--pill-failed-bg); color: var(--pill-failed-fg); }
+
+.labels { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.drug-label { border: 2px solid var(--slate); border-radius: 6px; padding: 12px; font-size: 13px; color: var(--slate); background: var(--surface); }
+.drug-label .dl-fac { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted-2); }
+.drug-label .dl-drug { font-size: 16px; font-weight: 700; margin: 4px 0 8px; }
+.drug-label .dl-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.drug-label .dl-row span { color: var(--muted-2); }
+@media (max-width: 900px) { .rx-edit { grid-template-columns: 1fr 1fr; } }
+
+.perm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.perm-group { border: 1px solid var(--hairline); border-radius: var(--r-card); padding: 12px 14px; }
+.perm-group .pg-title { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); margin-bottom: 6px; }
+.perm-row { display: flex; align-items: center; gap: 10px; min-height: 40px; font-size: 14px; cursor: pointer; }
+.perm-row input { width: 20px; height: 20px; accent-color: var(--teal-btn); flex: none; }
+.perm-row em { margin-left: auto; font-size: 12px; color: var(--muted-2); font-style: normal; }
+@media (max-width: 767px) { .perm-grid { grid-template-columns: 1fr; } }
+
+.audit-diff { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted-1); }
+.audit-diff span { display: inline-block; min-width: 64px; font-weight: 600; color: var(--muted-2); text-transform: uppercase; font-size: 11px; letter-spacing: .05em; }
+
+.quick-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 16px 0 8px; }
+.quick-tile {
+  display: flex; align-items: center; gap: 14px; min-height: 72px; padding: 14px 18px;
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-card); color: var(--slate);
+}
+.quick-tile:hover { background: var(--row-hover); }
+.quick-tile .icon { width: 24px; height: 24px; color: var(--teal); }
+.quick-tile b { display: block; font-size: 15px; }
+.quick-tile small { display: block; font-size: 13px; color: var(--muted-2); margin-top: 2px; }
+@media (max-width: 1100px) { .quick-row { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px) { .quick-row { grid-template-columns: 1fr; } }
+
+.inv-card.status-ok, .bill-pick.status-ok { border-left: 4px solid var(--confirmed); }
+.inv-card.status-warn, .bill-pick.status-warn { border-left: 4px solid var(--pending); }
+.inv-card.status-crit, .bill-pick.status-crit { border-left: 4px solid var(--critical); }
+.inv-card.status-expiry, .bill-pick.status-expiry { border-left: 4px solid var(--expiry); }
+.inv-card.status-info, .bill-pick.status-info { border-left: 4px solid var(--pharm); }
+.inv-card.status-none, .bill-pick.status-none { border-left: 4px solid var(--hairline); }
+
+.stat-link { display: block; color: inherit; cursor: pointer; }
+.stat-link:hover { background: var(--row-hover); }
+
+.dash-link { color: inherit; }
+.dash-link:hover { background: var(--row-hover); }
+
+.online-only { position: relative; display: inline-flex; }
+.offline-disabled { background: var(--disabled-bg) !important; border-color: var(--disabled-bg) !important; color: var(--disabled-fg) !important; cursor: not-allowed; }
+.online-tip {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; white-space: nowrap;
+  background: var(--surface-elevated); color: var(--slate); border: 2px solid var(--hairline);
+  border-radius: var(--r-btn); padding: 8px 12px; font-size: 13px; box-shadow: var(--shadow-pop);
+}
