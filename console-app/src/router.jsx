@@ -7,6 +7,8 @@ import OverviewPage from '@/features/overview/OverviewPage'
 import HospitalsPage from '@/features/hospitals/HospitalsPage'
 import BillingPage from '@/features/billing/BillingPage'
 import SupportPage from '@/features/support/SupportPage'
+import PrivacyPolicy from '@/pages/PrivacyPolicy'
+import Terms from '@/pages/Terms'
 
 // The console's routing table, exactly as scoped: /login, /overview,
 // /hospitals, /billing, /support. Everything except /login sits behind the
@@ -14,6 +16,8 @@ import SupportPage from '@/features/support/SupportPage'
 export const router = createBrowserRouter([
   { path: '/', element: <RootRedirect /> },
   { path: '/login', element: <Login /> },
+  { path: '/privacy', element: <PrivacyPolicy /> },
+  { path: '/terms', element: <Terms /> },
   {
     element: <RequireAuth />,
     children: [

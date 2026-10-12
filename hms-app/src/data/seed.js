@@ -1,4 +1,5 @@
 import { getDB } from './db'
+import { TENANT_STORES } from './schema'
 import { ROLE } from '@/auth/roles'
 import { defaultHospitalConfig } from '@/lib/hospital'
 import { hashPin } from '@/lib/pin'
@@ -15,6 +16,40 @@ const hoursAgo = (n) => iso(new Date(Date.now() - n * 3_600_000))
 export const HOSPITAL_ID = 'hosp_demo'
 export const HOSPITAL_SLUG = 'demohospital'
 const HOSP_BRANCH = 'br_demo_hosp'
+const DEMO_STAFF_IDS = new Set(['st_h_admin', 'st_h_recep', 'st_h_cash', 'st_h_pharm'])
+
+// Remove only the known synthetic Demo Hospital tenant when switching a local
+// browser from the demo repository to the real backend-backed workspace.
+export async function clearHospitalDemoData() {
+  const db = await getDB()
+  const tenantRows = await Promise.all(TENANT_STORES.map(async (store) => [
+    store,
+    await db.getAllFromIndex(store, 'by_hospital', HOSPITAL_ID),
+  ]))
+  const roles = (await db.getAll('staff_roles')).filter((row) => DEMO_STAFF_IDS.has(row.staffId))
+  const hospital = await db.get('hospitals', HOSPITAL_ID)
+  const queue = (await db.getAll('outbox')).filter((row) => {
+    const payload = row.payload || {}
+    return payload.hospitalId === HOSPITAL_ID || payload.branchId === HOSP_BRANCH || row.recordId === HOSPITAL_ID || DEMO_STAFF_IDS.has(payload.staffId)
+  })
+  const tx = db.transaction([...TENANT_STORES, 'hospitals', 'staff_roles', 'outbox'], 'readwrite')
+  for (const [store, rows] of tenantRows) {
+    const target = tx.objectStore(store)
+    for (const row of rows) await target.delete(row.id)
+  }
+  if (hospital) await tx.objectStore('hospitals').delete(HOSPITAL_ID)
+  for (const row of roles) await tx.objectStore('staff_roles').delete(row.id)
+  for (const row of queue) await tx.objectStore('outbox').delete(row.seq)
+  await tx.done
+
+  for (const key of ['dibia.snapshot.hosp_demo', 'dibia.syncCursor.hosp_demo']) localStorage.removeItem(key)
+  for (const key of ['dibia.hospital', 'dibia.facility']) {
+    try {
+      const cached = JSON.parse(localStorage.getItem(key) || 'null')
+      if (cached?.id === HOSPITAL_ID || cached?.slug === HOSPITAL_SLUG || cached?.name === 'Demo Hospital') localStorage.removeItem(key)
+    } catch { localStorage.removeItem(key) }
+  }
+}
 
 function buildHospital() {
   const P = HOSPITAL_ID

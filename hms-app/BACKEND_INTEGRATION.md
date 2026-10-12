@@ -12,14 +12,14 @@ The hospital app has one login flow. All authenticated staff enter the hospital 
 
 ## Authentication contract
 
-Hospital login currently resolves a local demo account. Replace it with a backend-issued session before production. Suggested endpoint:
+Development can use local demo accounts; production builds require backend-issued sessions. The backend currently exposes:
 
 - `POST /auth/login` accepts email or phone and password/PIN; response includes user profile, assigned roles, hospital, and branch.
 - `POST /auth/refresh` rotates the session.
 - `POST /auth/logout` revokes the session.
 - `POST /auth/password/reset` starts the account recovery process.
 
-The current frontend identity shape is `userId`, `name`, `email`, `roles`, `hospitalId`, `hospitalSlug`, `hospitalName`, `branchId`, `permGrants`, and `permDenies`. The server is authoritative for identity, permissions, hospital, branch, device approval, and account status. Client route guards are not an authorization boundary.
+The frontend identity shape is `userId`, `name`, `email`, `roles`, `hospitalId`, `hospitalSlug`, `hospitalName`, `branchId`, `permGrants`, and `permDenies`. The server must be authoritative for identity, permissions, hospital, branch, device approval, and account status. Client route guards are not an authorization boundary. Current backend role/action enforcement is incomplete.
 
 Only Super Admin, Hospital Admin, and CEO / Owner accounts may assign elevated admin roles or grant admin-only permissions. Enforce this policy in the server regardless of the role picker filters in the UI.
 
@@ -31,7 +31,7 @@ Console login is separate:
 
 Verify the console password on the server. Set `CONSOLE_ADMIN_EMAIL` and `CONSOLE_ADMIN_PASSWORD` only in the backend deployment environment. Never use a `VITE_*` variable for a real secret, since Vite embeds those values into the browser bundle. The console includes fixed public preview credentials for Vite development only; real production sign-in must use backend session endpoints.
 
-Until backend integration is ready, leave `VITE_CONSOLE_BACKEND_AUTH=false` and `VITE_ENABLE_SYNC=false`. The console preview login and hospital data workflows remain local to the frontend. Enable the corresponding backend flag only after the relevant server endpoints are deployed and ready.
+The HMS sync path now has a hospital-scoped initial snapshot plus push/pull deltas. Local IndexedDB remains the offline device store and outbox; SQLite is not a network-failure cache. Production must use the server's authoritative persistent store and exact HTTPS origins. The sync contract still needs complete action/permission checks and atomic domain workflows before patient data is used.
 
 ## Hospital data and tenant scope
 
@@ -51,7 +51,7 @@ The local repository writes to IndexedDB and queues operations for `POST /sync`.
 - Acknowledge only durable commits and return retryable/permanent errors per operation.
 - Provide ordered pull changes with stable cursors and tombstones for deletes.
 
-Do not trust browser-supplied `hospitalId`, `branchId`, `actorId`, balances, prices, or permissions as authoritative.
+Do not trust browser-supplied `hospitalId`, `branchId`, `actorId`, balances, prices, or permissions as authoritative. Current generic sync storage does not yet implement every required domain invariant.
 
 ## Privacy and caching
 

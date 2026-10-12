@@ -9,7 +9,7 @@ import { hospitalStatusPill } from '@/lib/status'
 // Hospitals — the tenant registry: a pending-approval queue (Approve / Reject)
 // and all registered hospitals (Suspend / Reactivate). Actions write through the
 // repository, so these tables and the overview stats update live.
-const MODULES = ['Reception', 'Queue', 'Cashier', 'Pharmacy', 'Inventory', 'Reports']
+const DEMO_MODULES = ['Reception', 'Queue', 'Cashier', 'Pharmacy', 'Inventory', 'Reports'].map((name) => ({ code: name.toLowerCase(), name }))
 export default function HospitalsPage() {
   const repo = useRepo()
   const toast = useToast()
@@ -17,6 +17,7 @@ export default function HospitalsPage() {
 
   const { data: hospitals } = useLiveQuery(() => repo.list('hospitals'), [repo])
   const list = hospitals || []
+  const moduleCatalog = list.find((hospital) => hospital.moduleCatalog?.length)?.moduleCatalog || DEMO_MODULES
   const [messageHospital, setMessageHospital] = useState('')
   const [messageText, setMessageText] = useState('')
 
@@ -26,9 +27,14 @@ export default function HospitalsPage() {
   }
   async function toggleModule(hospital, module) {
     const current = Array.isArray(hospital.modules) ? hospital.modules : []
-    const modules = current.includes(module) ? current.filter((item) => item !== module) : [...current, module]
+    const modules = current.includes(module.code) ? current.filter((item) => item !== module.code) : [...current, module.code]
     await repo.update('hospitals', hospital.id, { modules })
-    toast.success(`${module} ${modules.includes(module) ? 'enabled for' : 'disabled for'} ${hospital.name}`)
+    toast.success(`${module.name} ${modules.includes(module.code) ? 'enabled for' : 'disabled for'} ${hospital.name}`)
+  }
+  async function toggleAllModules(hospital) {
+    const allGranted = moduleCatalog.length > 0 && moduleCatalog.every((module) => hospital.modules?.includes(module.code))
+    await repo.update('hospitals', hospital.id, { modules: allGranted ? [] : moduleCatalog.map((module) => module.code) })
+    toast.success(allGranted ? `All modules locked for ${hospital.name}` : `Pro access enabled for ${hospital.name}`)
   }
   async function sendMessage(event) {
     event.preventDefault()
@@ -110,7 +116,7 @@ export default function HospitalsPage() {
           { key: 'staff', header: 'Staff' },
           {
             key: 'modules', header: 'Enabled modules',
-            render: (p) => <div className="module-checks">{MODULES.map((module) => <label key={module}><input type="checkbox" checked={(Array.isArray(p.modules) ? p.modules : []).includes(module)} onChange={() => toggleModule(p, module)} />{module}</label>)}</div>,
+            render: (p) => <div><Button variant="secondary" onClick={() => toggleAllModules(p)}>{moduleCatalog.length > 0 && moduleCatalog.every((module) => p.modules?.includes(module.code)) ? 'Lock all' : 'Grant Pro access'}</Button><div className="module-checks">{moduleCatalog.map((module) => <label key={module.code}><input type="checkbox" checked={(Array.isArray(p.modules) ? p.modules : []).includes(module.code)} onChange={() => toggleModule(p, module)} />{module.name}</label>)}</div></div>,
           },
           {
             key: 'usage', header: 'Usage-days this month',

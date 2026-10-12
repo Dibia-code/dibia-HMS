@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { Icon } from '@/components'
+import LegalFooter from '@/components/LegalFooter'
 
 // Dibia Super Admin sign-in. Production credentials are checked by the backend.
 export default function Login() {
@@ -68,6 +69,7 @@ export default function Login() {
           Manage hospital registrations, subscriptions and support for the Dibia HMS network.
         </div>
       </form>
+      <LegalFooter className="login-legal-footer" />
     </div>
   )
 }

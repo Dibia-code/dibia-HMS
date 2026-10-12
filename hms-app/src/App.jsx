@@ -5,6 +5,7 @@ import { ThemeProvider } from '@/theme/ThemeContext'
 import { ToastProvider } from '@/components'
 import { Icon } from '@/components/Icon'
 import { router } from '@/router'
+import CookieConsent from '@/components/CookieConsent'
 
 // Boot gate — hold the router until the local DB is seeded so no screen queries
 // an empty store on first load.
@@ -37,6 +38,7 @@ export default function App() {
           <ThemeProvider>
             <Boot>
               <RouterProvider router={router} />
+              <CookieConsent />
             </Boot>
           </ThemeProvider>
         </AuthProvider>

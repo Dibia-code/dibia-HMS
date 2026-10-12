@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { PageHeaderProvider, useHeaderState } from './pageHeaderContext'
+import LegalFooter from '@/components/LegalFooter'
 
 function PageHead() {
   const { header } = useHeaderState()
@@ -26,6 +27,7 @@ export function AppShell() {
             <PageHead />
             <Outlet />
           </main>
+          <LegalFooter className="shell-legal-footer" />
         </div>
       </div>
     </PageHeaderProvider>

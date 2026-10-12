@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { initials } from '@/lib/format'
+import { setConsoleAccessToken } from '@/data/remoteClient'
 
 // Console authentication is verified by the backend. The browser stores only
 // the returned display profile; the API should issue an HttpOnly session cookie.
@@ -7,7 +8,7 @@ import { initials } from '@/lib/format'
 const SESSION_KEY = 'dibia.console.session'
 const Ctx = createContext(null)
 const demoAuthEnabled = () => import.meta.env.DEV && import.meta.env.VITE_CONSOLE_DEMO_AUTH === 'true'
-const backendAuthEnabled = () => import.meta.env.VITE_CONSOLE_BACKEND_AUTH === 'true'
+const backendAuthEnabled = () => import.meta.env.PROD || import.meta.env.VITE_CONSOLE_BACKEND_AUTH === 'true'
 const demoEmail = () => String(import.meta.env.VITE_CONSOLE_DEMO_EMAIL || '').trim().toLowerCase()
 
 function loadSession() {
@@ -19,11 +20,12 @@ function loadSession() {
 }
 
 export function AuthProvider({ children }) {
-  const [session, setSession] = useState(loadSession)
+  const [session, setSession] = useState(() => backendAuthEnabled() && !demoAuthEnabled() ? null : loadSession())
   const [restoring, setRestoring] = useState(true)
 
   useEffect(() => {
     if (demoAuthEnabled()) {
+      setConsoleAccessToken(null)
       const stored = loadSession()
       if (stored?.demo !== true || String(stored?.email || '').toLowerCase() !== demoEmail()) {
         localStorage.removeItem(SESSION_KEY)
@@ -38,16 +40,13 @@ export function AuthProvider({ children }) {
       setRestoring(false)
       return undefined
     }
-    if (!loadSession()) {
-      setRestoring(false)
-      return undefined
-    }
     let cancelled = false
     fetch(`${import.meta.env.VITE_API_URL || '/api'}/auth/console/session`, { credentials: 'include' })
       .then(async (response) => {
         if (!response.ok) throw new Error('Session expired')
         const result = await response.json()
         if (!result.user) throw new Error('No active session')
+        setConsoleAccessToken(result.accessToken)
         const next = { id: result.user.id, name: result.user.name || 'Dibia Super Admin', email: result.user.email }
         if (!cancelled) {
           localStorage.setItem(SESSION_KEY, JSON.stringify(next))
@@ -56,6 +55,7 @@ export function AuthProvider({ children }) {
       })
       .catch(() => {
         if (!cancelled) {
+          setConsoleAccessToken(null)
           localStorage.removeItem(SESSION_KEY)
           setSession(null)
         }
@@ -80,6 +80,7 @@ export function AuthProvider({ children }) {
         throw new Error('Incorrect demo email or password.')
       }
       next = { id: 'local-console-demo', name: 'Dibia Super Admin', email: expectedEmail, demo: true }
+      setConsoleAccessToken(null)
     } else {
       if (!backendAuthEnabled()) {
         throw new Error('Backend sign-in is disabled. Use the local development demo until backend auth is ready.')
@@ -91,6 +92,7 @@ export function AuthProvider({ children }) {
       const result = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(result.message || 'Unable to sign in. Check your credentials.')
       if (!result.user) throw new Error('The authentication service returned no user profile.')
+      setConsoleAccessToken(result.accessToken)
       next = { id: result.user.id, name: result.user.name || 'Dibia Super Admin', email: result.user.email || cleanEmail }
     }
     localStorage.setItem(SESSION_KEY, JSON.stringify(next))
@@ -105,6 +107,7 @@ export function AuthProvider({ children }) {
       }).catch(() => {})
     }
     localStorage.removeItem(SESSION_KEY)
+    setConsoleAccessToken(null)
     setSession(null)
   }, [])
 

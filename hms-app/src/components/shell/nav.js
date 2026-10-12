@@ -76,6 +76,17 @@ export function moduleForRoute(segment, can) {
   return ROUTE_MODULE.get(segment) || 'admin'
 }
 
-export function visibleNav(can) {
-  return NAV.map((s) => ({ ...s, items: s.items.filter((it) => can(it.perm)) })).filter((s) => s.items.length > 0)
+const ITEM_MODULE = {
+  reception: 'reception', queue: 'queue', cashier: 'cashier', bills: 'cashier',
+  dispensing: 'pharmacy', pos: 'pharmacy', inventory: 'inventory', purchasing: 'inventory',
+  stocktaking: 'inventory', warehouse: 'inventory', refund: 'pharmacy', customers: 'inventory',
+  hmo: 'billing', expenses: 'billing', reports: 'reports',
+}
+
+export function visibleNav(can, moduleCodes, backendEnabled = false) {
+  return NAV.map((s) => ({ ...s, items: s.items.filter((it) => {
+    if (!can(it.perm)) return false
+    const required = ITEM_MODULE[it.to]
+    return !backendEnabled || !required || moduleCodes?.includes(required)
+  }) })).filter((s) => s.items.length > 0)
 }

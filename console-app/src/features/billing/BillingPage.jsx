@@ -36,8 +36,7 @@ export default function BillingPage() {
   )
   async function confirmPayment(transaction) {
     await repo.update('transactions', transaction.id, { status: 'paid', confirmedAt: new Date().toISOString() })
-    if (transaction.hospitalId) await repo.update('hospitals', transaction.hospitalId, { status: 'active' })
-    toast.success(`Payment confirmed for ${transaction.hospitalName}`)
+    toast.success(`Manual payment recorded for ${transaction.hospitalName}. Enable the paid modules in Hospitals.`)
   }
 
   return (
@@ -89,7 +88,7 @@ export default function BillingPage() {
                 return <Pill tone={s.tone}>{s.label}</Pill>
               },
             },
-            { key: 'confirm', header: 'Action', render: (t) => t.status === 'failed' ? <Button variant="primary" onClick={() => confirmPayment(t)}>Confirm payment received</Button> : '—' },
+            { key: 'confirm', header: 'Action', render: (t) => t.status !== 'paid' ? <Button variant="primary" onClick={() => confirmPayment(t)}>Mark manual payment received</Button> : '—' },
           ]}
           rows={recent}
           getRowKey={(t) => t.id}

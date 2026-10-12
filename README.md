@@ -12,4 +12,6 @@ Staff sign in to the hospital workspace and see the tools and dashboard for the 
 
 The separate console supports Dibia network administrators who manage hospital registrations, subscriptions, and support across the hospital network. It is distinct from the Hospital Management workspace used by hospital staff.
 
+New hospital registrations wait for Dibia Super Admin approval before the hospital owner can sign in. The apps use essential, secure session cookies for sign-in; they do not use analytics or advertising cookies.
+
 The console includes local preview credentials for demonstration only. Real administrator accounts must be authenticated by the backend when integration is enabled.

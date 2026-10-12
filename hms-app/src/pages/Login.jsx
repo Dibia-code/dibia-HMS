@@ -4,6 +4,7 @@ import { useAuth } from '@/auth/AuthContext'
 import { permissionsFor, landingPath } from '@/auth/permissions'
 import { Button, Field, Input, Modal, useToast } from '@/components'
 import { Icon } from '@/components/Icon'
+import LegalFooter from '@/components/LegalFooter'
 
 const DEMO = [
   { email: 'admin@demohospital.ng', name: 'Ifeoma Nwachukwu', note: 'Demo Hospital, Hospital Admin' },
@@ -11,6 +12,7 @@ const DEMO = [
   { email: 'cashier@demohospital.ng', name: 'Bola Adeyemi', note: 'Demo Hospital, Cashier' },
   { email: 'pharmacy@demohospital.ng', name: 'Chuka Eze', note: 'Demo Hospital, Pharmacist' },
 ]
+const backendAuthEnabled = () => import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
 
 export default function Login() {
   const { login, isAuthed, user, landingPath: currentLanding } = useAuth()
@@ -55,6 +57,10 @@ export default function Login() {
       toast.success(`Welcome back, ${session.name.split(' ')[0]}`)
       navigate(dest, { replace: true })
     } catch (err) {
+      if (err.code === 'REGISTRATION_PENDING') {
+        navigate('/approval-pending', { replace: true, state: { email: em } })
+        return
+      }
       setError(err.message || 'Could not sign in')
     } finally {
       setBusy(false)
@@ -91,12 +97,12 @@ export default function Login() {
               autoFocus
             />
           </Field>
-          <Field label="Password or PIN" htmlFor="password" hint="Demo build: any password works.">
+          <Field label="Password or PIN" htmlFor="password" hint={backendAuthEnabled() ? 'Use the password assigned to your hospital account.' : 'Demo build: any password works.'}>
             <Input
               id="password"
               type="password"
               autoComplete="current-password"
-              placeholder="••••••••"
+              placeholder="Password or PIN"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
@@ -122,8 +128,9 @@ export default function Login() {
         <div className="foot">
           New hospital? <Link to="/register">Create an account</Link>
         </div>
+        <LegalFooter />
 
-        <div className="mt-3">
+        {!backendAuthEnabled() && import.meta.env.DEV && <div className="mt-3">
           <div className="section-label" style={{ margin: '0 0 8px' }}>Demo accounts</div>
           <div className="grid" style={{ gap: 8 }}>
             {DEMO.map((d) => (
@@ -146,7 +153,7 @@ export default function Login() {
               </button>
             ))}
           </div>
-        </div>
+        </div>}
       </div>
     </div>
   )

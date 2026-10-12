@@ -7,8 +7,9 @@ import { cx } from '@/lib/cx'
 
 export function Sidebar({ onNavigate, open = false, onClose }) {
   const { user, can, logout } = useAuth()
+  const backendEnabled = import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
   const slug = user?.hospitalSlug
-  const sections = visibleNav(can)
+  const sections = visibleNav(can, user?.moduleCodes, backendEnabled)
   const roles = (user?.roles || []).map(roleLabel).join(', ')
 
   return (

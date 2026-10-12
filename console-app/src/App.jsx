@@ -4,6 +4,7 @@ import { RepositoryProvider } from '@/data/RepositoryContext'
 import { AuthProvider } from '@/auth/AuthContext'
 import { ThemeProvider } from '@/theme/ThemeContext'
 import { router } from '@/router'
+import CookieConsent from '@/components/CookieConsent'
 
 // Provider order (outer → inner): toasts are available everywhere, the
 // repository sits above auth so future session bootstrapping can read it, and
@@ -16,6 +17,7 @@ export default function App() {
         <AuthProvider>
           <ThemeProvider>
             <RouterProvider router={router} />
+            <CookieConsent />
           </ThemeProvider>
         </AuthProvider>
       </RepositoryProvider>

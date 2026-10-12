@@ -1,18 +1,19 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
+import { openCookiePreferences } from '@/components/cookiePreferences'
 import './landing.css'
 
-// Public marketing landing — styles are scoped under .landing in ./landing.css.
+// Public marketing landing â€” styles are scoped under .landing in ./landing.css.
 
-// ┌──────────────────────────────────────────────────────────────────────────┐
-// │  EDIT ME — the "Talk to us" button on the last card opens a WhatsApp   │
+// â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+// â”‚  EDIT ME â€” the "Talk to us" button on the last card opens a WhatsApp   â”‚
 // Opens WhatsApp with the number and message below.
-// │                                                                           │
-// │  • WHATSAPP_NUMBER: full international format, DIGITS ONLY — no "+",       │
-// │    spaces or dashes. A Nigerian line 0803 123 4567 → '2348031234567'.     │
-// │  • WHATSAPP_MESSAGE: the text pre-filled in the chat box when they tap.    │
-// └──────────────────────────────────────────────────────────────────────────┘
+// â”‚                                                                           â”‚
+// â”‚  â€¢ WHATSAPP_NUMBER: full international format, DIGITS ONLY â€” no "+",       â”‚
+// â”‚    spaces or dashes. A Nigerian line 0803 123 4567 â†’ '2348031234567'.     â”‚
+// â”‚  â€¢ WHATSAPP_MESSAGE: the text pre-filled in the chat box when they tap.    â”‚
+// â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 const WHATSAPP_NUMBER = '2349050793854' // Dibia WhatsApp (+234 905 079 3854)
 const WHATSAPP_MESSAGE = "Hello Dibia, I would like to know more about running my hospital on Dibia."
 const whatsappHref = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(WHATSAPP_MESSAGE)}`
@@ -20,13 +21,13 @@ const whatsappHref = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent
 function chipVisual(online, big) {
   if (online) {
     return {
-      label: 'Online · synced',
+      label: 'Online Â· synced',
       style: { background: big ? 'rgba(63,145,66,0.18)' : '#E8F3EC', color: big ? '#8FDB92' : '#2C7A2E' },
       pulse: '#3F9142',
     }
   }
   return {
-    label: 'Offline · saving locally',
+    label: 'Offline Â· saving locally',
     style: { background: big ? 'rgba(232,163,61,0.2)' : '#FDF2E1', color: big ? '#E8A33D' : '#9C6A17' },
     pulse: '#E8A33D',
   }
@@ -56,18 +57,18 @@ const PIPELINE = [
 ]
 
 const FEATURES = [
-  { d: '', title: 'FEFO expiry control', body: 'Earliest-expiring batches sell first, automatically — with overrides logged to the audit trail, not silently allowed.', icon: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></> },
-  { d: 'd1', title: 'Fast, offline-capable POS', body: "Barcode scanning, split payments, price overrides by permission — sales keep moving even when the internet doesn't.", icon: <><path d="M6 6h15l-1.5 9h-12z" /><path d="M6 6L4 3H2" /><circle cx="9" cy="20" r="1.4" /><circle cx="17" cy="20" r="1.4" /></> },
-  { d: 'd2', title: 'Multi-branch, one head office', body: 'Every branch keeps its own stock and cashiers — while the CEO sees performance across all of them from one screen.', icon: <><rect x="3" y="10" width="6" height="10" /><rect x="10" y="6" width="6" height="14" /><rect x="17" y="3" width="4" height="17" /></> },
-  { d: '', title: 'Staff accountability built in', body: 'Every discount, price change, void and adjustment is tied to the staff member who made it — nothing disappears quietly.', icon: <><circle cx="9" cy="7" r="3" /><path d="M2 21v-1a7 7 0 0 1 14 0v1" /><circle cx="18" cy="8" r="2.4" /></> },
-  { d: 'd1', title: 'Batch-level accuracy', body: 'Multiple batches of the same drug tracked separately — cost, price, supplier and expiry never get merged or confused.', icon: <><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M4 10h16" /></> },
-  { d: 'd2', title: 'Real profit, not just sales', body: 'Cost of goods, expenses and margin by product, staff, branch and period — so "busy" and "profitable" don\'t get confused.', icon: <path d="M3 3v18h18M7 15l4-6 4 3 5-8" /> },
+  { d: '', title: 'FEFO expiry control', body: 'Earliest-expiring batches sell first, automatically â€” with overrides logged to the audit trail, not silently allowed.', icon: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></> },
+  { d: 'd1', title: 'Fast, offline-capable POS', body: "Barcode scanning, split payments, price overrides by permission â€” sales keep moving even when the internet doesn't.", icon: <><path d="M6 6h15l-1.5 9h-12z" /><path d="M6 6L4 3H2" /><circle cx="9" cy="20" r="1.4" /><circle cx="17" cy="20" r="1.4" /></> },
+  { d: 'd2', title: 'Multi-branch, one head office', body: 'Every branch keeps its own stock and cashiers â€” while the CEO sees performance across all of them from one screen.', icon: <><rect x="3" y="10" width="6" height="10" /><rect x="10" y="6" width="6" height="14" /><rect x="17" y="3" width="4" height="17" /></> },
+  { d: '', title: 'Staff accountability built in', body: 'Every discount, price change, void and adjustment is tied to the staff member who made it â€” nothing disappears quietly.', icon: <><circle cx="9" cy="7" r="3" /><path d="M2 21v-1a7 7 0 0 1 14 0v1" /><circle cx="18" cy="8" r="2.4" /></> },
+  { d: 'd1', title: 'Batch-level accuracy', body: 'Multiple batches of the same drug tracked separately â€” cost, price, supplier and expiry never get merged or confused.', icon: <><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M4 10h16" /></> },
+  { d: 'd2', title: 'Real profit, not just sales', body: 'Cost of goods, expenses and margin by product, staff, branch and period â€” so "busy" and "profitable" don\'t get confused.', icon: <path d="M3 3v18h18M7 15l4-6 4 3 5-8" /> },
 ]
 
 const BRANCHES = [
-  { name: 'Demo Hospital — Main Campus', sub: '24 staff · 8 patients in care', fig: '₦412,000' },
-  { name: 'Demo Hospital — Outpatient', sub: '9 clinicians · 3 departments active', fig: '₦268,500' },
-  { name: 'Demo Hospital — Maternity', sub: '11 staff · 3 patients in care', fig: '₦355,900' },
+  { name: 'Demo Hospital â€” Main Campus', sub: '24 staff Â· 8 patients in care', fig: 'â‚¦412,000' },
+  { name: 'Demo Hospital â€” Outpatient', sub: '9 clinicians Â· 3 departments active', fig: 'â‚¦268,500' },
+  { name: 'Demo Hospital â€” Maternity', sub: '11 staff Â· 3 patients in care', fig: 'â‚¦355,900' },
 ]
 
 const QUEUE = ['Payment RCP-7K2M9Q, cash', 'Prescription dispensed, 4 drugs', 'Patient registered, Reception']
@@ -85,7 +86,7 @@ export default function LandingPage() {
   const [heroOnline, setHeroOnline] = useState(true)
   const [demoOnline, setDemoOnline] = useState(true)
 
-  // Auth-aware nav: a signed-in owner shouldn't be sent back through /login —
+  // Auth-aware nav: a signed-in owner shouldn't be sent back through /login â€”
   // give them a direct way into their tenant instead. Mirrors router.jsx.
   const { isAuthed, user, landingPath } = useAuth()
   const dashboardPath = isAuthed && user?.hospitalSlug ? `/${user.hospitalSlug}/${landingPath()}` : null
@@ -157,7 +158,7 @@ export default function LandingPage() {
             <p className="hero-sub">Reception, cashier, pharmacy and admin on one platform. Every action is saved on the device first and syncs on its own when the network returns.</p>
             <div className="hero-actions">
               <Link className="btn btn-amber" to="/register">Create your hospital account</Link>
-              <a className="btn btn-ghost" href="#offline">See offline mode →</a>
+              <a className="btn btn-ghost" href="#offline">See offline mode â†’</a>
             </div>
             <div className="trust-row">
               <div className="tstat"><b>10</b><span>Staff roles supported</span></div>
@@ -174,12 +175,12 @@ export default function LandingPage() {
               </div>
               <div className="device-body">
                 <div className="stat-mini-row">
-                   <div className="stat-mini"><div className="l">Today&apos;s sales</div><div className="v">₦184,500</div></div>
-                  <div className="stat-mini"><div className="l">Gross profit</div><div className="v">₦52,300</div></div>
+                   <div className="stat-mini"><div className="l">Today&apos;s sales</div><div className="v">â‚¦184,500</div></div>
+                  <div className="stat-mini"><div className="l">Gross profit</div><div className="v">â‚¦52,300</div></div>
                   <div className="stat-mini"><div className="l">Low stock</div><div className="v">7</div></div>
                 </div>
-                <div className="mini-row-line"><span className="p1"><span className="stock-dot" style={{ background: 'var(--confirmed)' }} />Amoxicillin 250mg</span><span className="p2">Batch #A22 · exp Mar 2027</span></div>
-                <div className="mini-row-line"><span className="p1"><span className="stock-dot" style={{ background: 'var(--pending)' }} />Paracetamol 500mg</span><span className="p2">Batch #P09 · exp Dec 2026</span></div>
+                <div className="mini-row-line"><span className="p1"><span className="stock-dot" style={{ background: 'var(--confirmed)' }} />Amoxicillin 250mg</span><span className="p2">Batch #A22 Â· exp Mar 2027</span></div>
+                <div className="mini-row-line"><span className="p1"><span className="stock-dot" style={{ background: 'var(--pending)' }} />Paracetamol 500mg</span><span className="p2">Batch #P09 Â· exp Dec 2026</span></div>
                 <div className="mini-row-line"><span className="p1"><span className="stock-dot" style={{ background: 'var(--critical)' }} />Ibuprofen 400mg</span><span className="p2">Out of stock</span></div>
               </div>
             </div>
@@ -233,11 +234,11 @@ export default function LandingPage() {
           <div className="reveal">
             <p className="section-tag">The thing every other system gets wrong</p>
             <h2 className="section-title">Keeps selling when the network cuts out.</h2>
-             <p style={{ marginBottom: 22 }}>Every sale is written to the device first, using IndexedDB — never lost, never blocked by a bad connection. The moment you&apos;re back online, everything reconciles automatically.</p>
+             <p style={{ marginBottom: 22 }}>Every sale is written to the device first, using IndexedDB â€” never lost, never blocked by a bad connection. The moment you&apos;re back online, everything reconciles automatically.</p>
             <ul className="offline-list">
-               <li><Check /> A status indicator is always visible — you always know if you&apos;re online or offline.</li>
+               <li><Check /> A status indicator is always visible â€” you always know if you&apos;re online or offline.</li>
               <li><Check /> Sales made offline queue locally and sync the moment connectivity returns.</li>
-              <li><Check /> No duplicate transactions — sync is built to reconcile safely, every time.</li>
+              <li><Check /> No duplicate transactions â€” sync is built to reconcile safely, every time.</li>
             </ul>
           </div>
           <div className="status-demo reveal d2">
@@ -263,7 +264,7 @@ export default function LandingPage() {
           <div className="reveal">
             <p className="section-tag">For the owner, not just the cashier</p>
             <h2 className="section-title">See every branch, from your phone.</h2>
-            <p className="section-sub" style={{ marginBottom: 30 }}>Remote monitoring for the CEO — sales, stock value, expiry risk and staff activity, across every location, without visiting any of them.</p>
+            <p className="section-sub" style={{ marginBottom: 30 }}>Remote monitoring for the CEO â€” sales, stock value, expiry risk and staff activity, across every location, without visiting any of them.</p>
           </div>
           <div className="reveal d1">
             {BRANCHES.map((b) => (
@@ -287,24 +288,24 @@ export default function LandingPage() {
         <div className="wrap">
           <div className="reveal" style={{ textAlign: 'center' }}>
             <p className="section-tag">Simple, honest pricing</p>
-            <h2 className="section-title" style={{ margin: '0 auto 16px' }}>One plan. Everything included.</h2>
-            <p className="section-sub" style={{ margin: '0 auto' }}>No per-seat fees and no surprises — every feature, every branch and every staff role, for one flat monthly price.</p>
+            <h2 className="section-title" style={{ margin: '0 auto 16px' }}>Choose the hospital modules you need.</h2>
+            <p className="section-sub" style={{ margin: '0 auto' }}>Modules are enabled by Dibia after manual payment confirmation. Contact the team for current module pricing and payment instructions.</p>
           </div>
           <div className="price-card reveal d1">
-            <div className="price-badge">Most popular</div>
-            <div className="price-plan">Growth Plan</div>
-            <div className="price-amount"><span className="cur">₦</span>15,000<span className="per">/ month</span></div>
-            <div className="price-note">Billed monthly · cancel anytime</div>
+            <div className="price-badge">Manual activation</div>
+            <div className="price-plan">Hospital modules</div>
+            <div className="price-amount" style={{ fontSize: 30 }}>Request pricing</div>
+            <div className="price-note">No online payment processing is enabled</div>
             <ul className="price-feats">
-              <li><Check /> Unlimited staff &amp; all 10 roles</li>
-              <li><Check /> Every branch under one head office</li>
-              <li><Check /> Offline-capable POS with auto-sync</li>
-              <li><Check /> FEFO batch &amp; expiry control</li>
-              <li><Check /> Profit, cash &amp; staff reports</li>
-              <li><Check /> Barcode scanning &amp; receipt printing</li>
+              <li><Check /> Select the modules your hospital needs</li>
+              <li><Check /> Dibia confirms manual payments</li>
+              <li><Check /> Access is enabled from the admin console</li>
+              <li><Check /> Special hospitals can receive Pro access</li>
+              <li><Check /> Module access is managed per hospital</li>
+              <li><Check /> Online payment gateway is currently unavailable</li>
             </ul>
             <Link className="btn btn-amber price-cta" to="/register">Create your hospital account</Link>
-            <a className="price-talk" href={whatsappHref} target="_blank" rel="noopener noreferrer">or talk to us on WhatsApp →</a>
+            <a className="price-talk" href={whatsappHref} target="_blank" rel="noopener noreferrer">Contact us for pricing and manual payment instructions</a>
           </div>
         </div>
       </section>
@@ -314,7 +315,7 @@ export default function LandingPage() {
         <div className="wrap">
           <div className="cta-card reveal">
             <h2>Create your hospital account on Dibia</h2>
-            <p>Set up your business, invite your staff, and start selling — online or offline — in one afternoon.</p>
+            <p>Set up your business, invite your staff, and start selling â€” online or offline â€” in one afternoon.</p>
             <div className="cta-actions">
               <Link className="btn btn-amber" to="/register">Create your hospital account</Link>
               <a className="btn" style={{ background: 'rgba(255,255,255,0.12)', color: '#fff' }} href={whatsappHref} target="_blank" rel="noopener noreferrer">Talk to us</a>
@@ -327,6 +328,11 @@ export default function LandingPage() {
         <div className="wrap">
           <div>2026 Dibia. Built for hospitals across Nigeria.</div>
           <div>Reception, Cashier, Pharmacy, Admin</div>
+          <nav className="landing-legal-links" aria-label="Legal and privacy">
+            <Link to="/privacy">Privacy Policy</Link>
+            <Link to="/terms">Terms and Conditions</Link>
+            <button type="button" onClick={openCookiePreferences}>Cookie Preferences</button>
+          </nav>
         </div>
       </footer>
     </div>

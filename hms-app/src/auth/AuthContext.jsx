@@ -1,15 +1,43 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { useBaseRepo, useScope } from '@/data/RepositoryContext'
+import { useBaseRepo, useScope, useSyncEngine } from '@/data/RepositoryContext'
 import { dataBus } from '@/data/repository'
 import { hashPin } from '@/lib/pin'
 import { permissionsFor, can as canDo, landingPath } from './permissions'
 
-// Session/auth — no real backend yet (FRONTEND_SPEC §7). login() resolves an
-// email against seeded staff and computes the permission union; the session
-// SHAPE is the contract — swap the lookup for a token exchange later, unchanged.
+// Production and backend-enabled development authenticate against the API.
+// Local demo mode resolves seeded staff from IndexedDB.
 
 const SESSION_KEY = 'dibia.session'
 const Ctx = createContext(null)
+const backendAuthEnabled = () => import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
+const apiBase = () => import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:4000' : '/api')
+
+function fromBackend(result) {
+  const user = result?.user || {}
+  return {
+    userId: user.id,
+    name: user.name,
+    email: user.email,
+    roles: Array.isArray(user.roles) ? user.roles : [],
+    hospitalId: user.hospitalId || result?.tenant?.id,
+    hospitalSlug: user.hospitalSlug || result?.tenant?.slug,
+    hospitalName: user.hospitalName || result?.tenant?.name,
+    branchId: user.branchId || result?.branch?.id || null,
+    backendBranchId: user.branchId || result?.branch?.id || null,
+    permGrants: [],
+    permDenies: [],
+  }
+}
+
+async function loadBackendModules(remote) {
+  if (!remote?.configured) return []
+  try {
+    const response = await remote.request(`${apiBase()}/tenant/modules`, { credentials: 'include', headers: {} })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) return []
+    return (result.modules || []).filter((module) => module.entitlementStatus === 'entitled' && module.activationStatus === 'enabled').map((module) => module.code)
+  } catch { return [] }
+}
 
 function loadSession() {
   try {
@@ -33,11 +61,38 @@ function loadSession() {
 export function AuthProvider({ children }) {
   const baseRepo = useBaseRepo()
   const [, setScope] = useScope()
-  const [session, setSession] = useState(loadSession)
+  const sync = useSyncEngine()
+  const [session, setSession] = useState(() => backendAuthEnabled() ? null : loadSession())
   const [restoring, setRestoring] = useState(true)
 
   // Restore an existing session's tenant scope on reload.
   useEffect(() => {
+    if (backendAuthEnabled()) {
+      let cancelled = false
+      fetch(`${apiBase()}/auth/refresh`, { method: 'POST', credentials: 'include' })
+        .then(async (response) => {
+          const result = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(result.message || 'No active backend session')
+          if (cancelled) return
+          const next = fromBackend(result)
+          if (!next.userId || !next.hospitalId || !next.hospitalSlug) throw new Error('The server returned an incomplete hospital session')
+          sync.remote?.setAccessToken?.(result.accessToken, next.hospitalId, next.backendBranchId)
+          next.moduleCodes = await loadBackendModules(sync.remote)
+          localStorage.setItem(SESSION_KEY, JSON.stringify(next))
+          setSession(next)
+          setScope({ hospitalId: next.hospitalId, branchId: next.branchId })
+          sync.drain()
+        })
+        .catch(() => {
+          if (!cancelled) {
+            sync.remote?.setAccessToken?.(null)
+            localStorage.removeItem(SESSION_KEY)
+            setSession(null)
+          }
+        })
+        .finally(() => { if (!cancelled) setRestoring(false) })
+      return () => { cancelled = true }
+    }
     if (session?.hospitalId) {
       setScope({ hospitalId: session.hospitalId, branchId: session.branchId ?? null })
     }
@@ -49,6 +104,27 @@ export function AuthProvider({ children }) {
   const login = useCallback(
     async (email, password) => {
       const id = String(email).trim().toLowerCase()
+      if (backendAuthEnabled()) {
+        const response = await fetch(`${apiBase()}/auth/login`, {
+          method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifier: id, password }),
+        })
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          const error = new Error(result.message || 'Could not sign in')
+          error.code = result.code
+          throw error
+        }
+        const next = fromBackend(result)
+        if (!next.userId || !next.hospitalId || !next.hospitalSlug) throw new Error('The server returned an incomplete hospital session')
+        sync.remote?.setAccessToken?.(result.accessToken, next.hospitalId, next.backendBranchId)
+        next.moduleCodes = await loadBackendModules(sync.remote)
+        localStorage.setItem(SESSION_KEY, JSON.stringify(next))
+        setSession(next)
+        setScope({ hospitalId: next.hospitalId, branchId: next.branchId })
+        sync.drain()
+        return next
+      }
       let staff = null
       if (id.includes('@')) {
         staff = await baseRepo.findByIndex('staff', 'by_email', id)
@@ -100,7 +176,7 @@ export function AuthProvider({ children }) {
         .catch(() => {})
       return next
     },
-    [baseRepo, setScope],
+    [baseRepo, setScope, sync],
   )
 
   const logout = useCallback(() => {
@@ -108,10 +184,12 @@ export function AuthProvider({ children }) {
       try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null')?.userId } catch { return null }
     })()
     if (id) baseRepo.update('staff', id, { lastActiveAt: null }).catch(() => {})
+    if (backendAuthEnabled()) fetch(`${apiBase()}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {})
+    sync.remote?.setAccessToken?.(null)
     localStorage.removeItem(SESSION_KEY)
     setSession(null)
     setScope({ hospitalId: null, branchId: null })
-  }, [setScope, baseRepo])
+  }, [setScope, baseRepo, sync])
 
   // Presence: lets the admin see who is on shift right now.
   useEffect(() => {
@@ -157,6 +235,24 @@ export function AuthProvider({ children }) {
       dataBus.removeEventListener('change', onChange)
     }
   }, [session?.userId, baseRepo, setScope])
+
+  useEffect(() => {
+    if (!backendAuthEnabled() || !session?.userId) return undefined
+    let cancelled = false
+    const refreshModules = async () => {
+      const moduleCodes = await loadBackendModules(sync.remote)
+      if (cancelled) return
+      setSession((previous) => {
+        if (!previous || previous.moduleCodes?.length === moduleCodes.length && moduleCodes.every((code) => previous.moduleCodes.includes(code))) return previous
+        const next = { ...previous, moduleCodes }
+        localStorage.setItem(SESSION_KEY, JSON.stringify(next))
+        return next
+      })
+    }
+    refreshModules()
+    const timer = setInterval(refreshModules, 60_000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [session?.userId, sync])
 
   const updateSession = useCallback((patch) => {
     setSession((prev) => {

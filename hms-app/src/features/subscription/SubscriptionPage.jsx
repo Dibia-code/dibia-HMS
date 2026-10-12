@@ -1,62 +1,44 @@
+import { useEffect, useState } from 'react'
 import { useAuth } from '@/auth/AuthContext'
-import { useRepo } from '@/data/RepositoryContext'
-import { useLiveQuery } from '@/hooks/useLiveQuery'
-import { useUsageDays } from '@/hooks/useUsageDays'
-import { usePageHeader, Card, CardHead, Pill, DataTable } from '@/components'
-import { TIERS } from '@/lib/hospital'
-import { naira, number } from '@/lib/format'
+import { useSyncEngine } from '@/data/RepositoryContext'
+import { usePageHeader, Card, CardHead, Pill } from '@/components'
+import { naira } from '@/lib/format'
 
 export default function SubscriptionPage() {
   const { user } = useAuth()
-  const repo = useRepo()
-  const u = useUsageDays()
-  const { data: hospital } = useLiveQuery(() => repo.get('hospitals', user.hospitalId), [repo, user.hospitalId])
-  usePageHeader({ title: 'Usage and billing', subtitle: 'Usage-days this month and your current tier' }, [])
+  const sync = useSyncEngine()
+  const [modules, setModules] = useState([])
+  const [error, setError] = useState('')
+  usePageHeader({ title: 'Modules and billing', subtitle: 'Module access is activated by Dibia after manual payment confirmation.' }, [])
 
-  const remaining = u.tier.max === Infinity ? null : Math.max(0, u.tier.max - u.days)
+  useEffect(() => {
+    const baseUrl = String(import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:4000' : '/api')).replace(/\/+$/, '')
+    const token = sync.remote?.accessToken
+    if (!token) return
+    let cancelled = false
+    fetch(`${baseUrl}/tenant/modules`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(async (response) => {
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(result.message || 'Could not load module access')
+        if (!cancelled) setModules(result.modules || [])
+      })
+      .catch((cause) => { if (!cancelled) setError(cause.message) })
+    return () => { cancelled = true }
+  }, [sync, user?.hospitalId])
 
   return (
-    <>
-      {u.level !== 'ok' && (
-        <div className={`banner ${u.level === 'crit' ? 'fail' : ''}`} style={{ position: 'static', marginBottom: 16, borderRadius: 'var(--r-card)', borderWidth: 1, borderStyle: 'solid' }} role="status">
-          <div className="msg">
-            {u.level === 'crit'
-              ? `You have reached the ${u.tier.name} tier limit. Usage above it moves this hospital to the next tier${u.upcoming ? `, ${u.upcoming.name}` : ''}.`
-              : `You are at ${u.pct}% of the ${u.tier.name} tier. ${remaining} usage-days left before the next tier.`}
-          </div>
+    <Card>
+      <CardHead title="Hospital modules" />
+      <p className="text-muted">All modules start locked. Contact the Dibia team for module pricing and manual payment details. After confirming your payment, an administrator enables the modules you paid for. Special Pro access can also be granted by an administrator.</p>
+      {error && <p role="alert" className="text-muted">{error}</p>}
+      {modules.length > 0 ? modules.map((module) => {
+        const enabled = module.entitlementStatus === 'entitled' && module.activationStatus === 'enabled'
+        return <div key={module.code} className="row-between" style={{ padding: '14px 0', borderBottom: '1px solid var(--hairline)' }}>
+          <div><strong>{module.name}</strong><div className="text-muted">{module.description}</div>{Number(module.priceMinor) > 0 && <div className="text-muted">{naira(module.priceMinor / 100)} per month</div>}</div>
+          <Pill tone={enabled ? 'active' : 'pending'}>{enabled ? 'Enabled' : 'Locked'}</Pill>
         </div>
-      )}
-
-      <Card className="mb-3">
-        <CardHead title="This month">
-          <div className="spacer" />
-          <Pill tone="active">{u.tier.name} tier</Pill>
-        </CardHead>
-        <div className="big-num">{number(u.days)} <small className="text-muted" style={{ fontSize: 15, fontWeight: 500 }}>usage-days</small></div>
-        <div className="meter" role="progressbar" aria-valuenow={u.pct} aria-valuemin={0} aria-valuemax={100} aria-label="Usage-day meter" style={{ height: 32 }}>
-          <div className={`meter-fill ${u.level}`} style={{ width: `${Math.max(u.pct, 8)}%` }}><span>{u.pct}%</span></div>
-        </div>
-        <div className="row-between mt-1 text-muted">
-          <span>{u.tier.max === Infinity ? 'No upper limit on this tier' : `${number(u.tier.max)} usage-days is the top of the ${u.tier.name} tier`}</span>
-          <span>{u.upcoming ? `Next tier: ${u.upcoming.name} from ${number(u.upcoming.min)}` : 'Highest tier'}</span>
-        </div>
-        <div className="text-muted mt-2">A usage-day is one patient seen or documented on one calendar day. An admitted patient counts once for each day of the stay. Payment is due at the end of the month.</div>
-      </Card>
-
-      <Card>
-        <CardHead title="Tiers" />
-        <DataTable
-          rowStatus={(t) => (t.key === u.tier.key ? 'ok' : null)}
-          columns={[
-            { key: 'name', header: 'Tier', render: (t) => <span className="cell-strong">{t.name}{t.key === u.tier.key ? ' (current)' : ''}</span> },
-            { key: 'range', header: 'Usage-days a month', render: (t) => (t.max === Infinity ? `${number(t.min)} and above` : `${number(t.min)} to ${number(t.max)}`) },
-            { key: 'fee', header: 'Monthly fee', align: 'num', render: (t) => (t.fee === 0 ? 'Free' : naira(t.fee)) },
-          ]}
-          rows={TIERS}
-          getRowKey={(t) => t.key}
-        />
-        <div className="text-muted mt-2">Account status: {hospital?.subscriptionStatus === 'failed' ? 'payment failed' : 'active'}. Onboarding is free.</div>
-      </Card>
-    </>
+      }) : !error && <p className="text-muted">Module access details are available after connecting to the hospital service.</p>}
+      <p className="text-muted mt-2">A manual payment confirmation does not automatically unlock every module. Each paid module is enabled separately by Dibia administration.</p>
+    </Card>
   )
 }

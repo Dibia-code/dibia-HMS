@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { LocalRepository } from './repository'
 import { RemoteApiClient } from './remoteClient'
 import { SyncEngine } from './sync'
-import { ensureHospitalSeed, ensureHospitalPharmacySeed } from './seed'
+import { clearHospitalDemoData, ensureHospitalSeed, ensureHospitalPharmacySeed } from './seed'
 
 // Wires the local-first data layer into React. Provider order matters: this sits
 // ABOVE AuthProvider so auth can resolve staff through the repo after login.
@@ -23,9 +23,16 @@ export function RepositoryProvider({ children }) {
     let cancelled = false
     const engine = engineRef.current
     ;(async () => {
-      await ensureHospitalSeed()
-      await ensureHospitalPharmacySeed()
-      await new LocalRepository().ensureBatches()
+      // Demo patients, staff and inventory are development-only. A production
+      // build must hydrate from the backend and must never synthesize stock.
+      const backendAuthEnabled = import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
+      if (backendAuthEnabled) {
+        await clearHospitalDemoData()
+      } else if (import.meta.env.DEV) {
+        await ensureHospitalSeed()
+        await ensureHospitalPharmacySeed()
+        await new LocalRepository().ensureBatches()
+      }
       if (cancelled) return
       engine.start()
       setReady(true)

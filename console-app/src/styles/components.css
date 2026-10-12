@@ -41,7 +41,7 @@
 .section-label { font-size: 11px; font-weight: 800; color: var(--muted-2); text-transform: uppercase; letter-spacing: .4px; margin-bottom: 14px; }
 
 /* ---------- login ---------- */
-.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.login-wrap { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 20px; }
 .login-card { width: 100%; max-width: 360px; background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-card); padding: 38px 32px; text-align: center; }
 .login-card .mark { width: 46px; height: 46px; border-radius: 8px; background: var(--teal-btn); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; }
 .login-card .mark svg { width: 22px; height: 22px; stroke: #fff; }
@@ -49,6 +49,35 @@
 .login-sub { font-size: 13px; color: var(--muted-2); margin-bottom: 26px; }
 .login-note { font-size: 11.5px; color: var(--muted-3); margin-top: 20px; line-height: 1.5; }
 .login-error { font-size: 12.5px; color: var(--critical); font-weight: 600; margin: -4px 0 14px; }
+
+/* Privacy, cookie controls and legal pages */
+.legal-footer { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 10px 20px; color: var(--muted-2); font-size: 12px; }
+.legal-footer nav { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 18px; }
+.legal-footer a, .legal-footer button { border: 0; padding: 4px 0; background: none; color: var(--teal); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.login-legal-footer { margin: 18px 0 0; }
+.shell-legal-footer { padding: 12px 40px 20px; }
+.legal-page-wrap { min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); padding: 28px 24px 18px; }
+.legal-page { width: min(100%, 820px); margin: 0 auto 32px; padding: clamp(24px, 5vw, 52px); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-card); color: var(--slate); line-height: 1.7; }
+.legal-page h1 { margin: 22px 0 4px; font-size: clamp(28px, 5vw, 38px); }
+.legal-page h2 { margin: 28px 0 8px; font-size: 18px; }
+.legal-page p { color: var(--muted-1); }
+.legal-page .legal-updated { font-size: 13px; color: var(--muted-2); }
+.legal-back { color: var(--teal); font-weight: 600; }
+.cookie-overlay { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(16, 24, 24, .58); }
+.cookie-consent { width: min(780px, 100%); padding: 24px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 20px; color: var(--slate); background: var(--surface-elevated); border: 1px solid var(--hairline); border-radius: var(--r-card); box-shadow: 0 16px 55px rgba(0,0,0,.22); }
+.cookie-copy h2 { margin: 0 0 5px; font-size: 17px; }
+.cookie-copy p { margin: 0; color: var(--muted-2); font-size: 13px; line-height: 1.5; }
+.cookie-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.cookie-btn { min-height: 40px; padding: 0 12px; border: 1px solid var(--hairline); border-radius: var(--r-btn); color: var(--slate); background: var(--surface); font: 600 12px var(--font-ui); cursor: pointer; }
+.cookie-btn:hover { border-color: var(--teal); }
+.cookie-btn.cookie-primary { border-color: var(--teal-btn); background: var(--teal-btn); color: var(--on-teal); }
+.cookie-options { margin-top: 14px; border-top: 1px solid var(--hairline); }
+.cookie-option { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--hairline); }
+.cookie-option span { display: grid; gap: 3px; }
+.cookie-option small { color: var(--muted-2); }
+.cookie-option input { width: 18px; height: 18px; accent-color: var(--teal); }
+.cookie-close { grid-column: 1 / -1; justify-self: end; border: 0; padding: 0; color: var(--teal); background: transparent; font: 600 12px var(--font-ui); cursor: pointer; }
+@media (max-width: 720px) { .cookie-consent { grid-template-columns: 1fr; padding: 18px; gap: 12px; } .cookie-actions { justify-content: stretch; } .cookie-btn { flex: 1; } .shell-legal-footer { padding-inline: 16px; } }
 
 /* ---------- fields ---------- */
 .field { text-align: left; margin-bottom: 14px; }

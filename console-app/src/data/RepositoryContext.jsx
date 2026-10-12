@@ -1,5 +1,6 @@
 import { createContext, useContext, useMemo, useRef } from 'react'
 import { LocalConsoleRepository } from './repository'
+import { RemoteConsoleClient } from './remoteClient'
 
 // Provides the single repository instance to the tree. Today it's the in-memory
 // LocalConsoleRepository; to go live, construct a RemoteConsoleClient here
@@ -11,7 +12,11 @@ export function RepositoryProvider({ children }) {
   // Created once and kept for the app's lifetime so in-memory edits persist
   // across navigation (approvals, suspensions, etc.).
   const repoRef = useRef(null)
-  if (!repoRef.current) repoRef.current = new LocalConsoleRepository()
+  if (!repoRef.current) {
+    repoRef.current = import.meta.env.PROD || import.meta.env.VITE_CONSOLE_BACKEND_AUTH === 'true'
+      ? new RemoteConsoleClient()
+      : new LocalConsoleRepository()
+  }
 
   const value = useMemo(() => ({ repo: repoRef.current }), [])
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

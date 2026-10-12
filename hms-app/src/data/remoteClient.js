@@ -1,50 +1,70 @@
-// RemoteApiClient — the network seam (backend contract: FRONTEND_SPEC §7).
-// The ONE file to change when the real API lands: replace the stub bodies below
-// with fetch()/axios calls. Correctness depends on server-side idempotency —
-// each op carries an opId the server must apply at most once (§6).
+// Backend API client for tenant-scoped sync and snapshot hydration.
 
 export class RemoteApiClient {
-  constructor({ latencyMs = 400 } = {}) {
-    this.latencyMs = latencyMs
-    this.baseUrl = String(import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
-    this.configured = Boolean(this.baseUrl) && import.meta.env.VITE_ENABLE_SYNC === 'true'
+  constructor() {
+    this.baseUrl = String(import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:4000' : '/api')).replace(/\/+$/, '')
+    this.hasEndpoint = Boolean(this.baseUrl) && (import.meta.env.PROD || import.meta.env.VITE_ENABLE_SYNC === 'true' || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true')
+    this.accessToken = null
+    this.hospitalId = null
+    this.backendBranchId = null
+    this.cursorKey = 'dibia.syncCursor'
+  }
+
+  get configured() { return this.hasEndpoint && !!this.accessToken }
+  setAccessToken(token, hospitalId, backendBranchId) {
+    this.accessToken = token || null
+    this.hospitalId = hospitalId || null
+    this.backendBranchId = backendBranchId || null
+    if (hospitalId) this.cursorKey = `dibia.syncCursor.${hospitalId}`
+  }
+
+  async request(url, options) {
+    const send = () => fetch(url, { ...options, headers: { ...options.headers, ...(this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}) } })
+    let response = await send()
+    if (response.status === 401 && this.hasEndpoint) {
+      const refresh = await fetch(`${this.baseUrl}/auth/refresh`, { method: 'POST', credentials: 'include' })
+      const session = await refresh.json().catch(() => ({}))
+      if (refresh.ok && session.accessToken) {
+        this.setAccessToken(session.accessToken, this.hospitalId, this.backendBranchId)
+        response = await send()
+      }
+    }
+    return response
   }
 
   // Push a batch of outbox ops. Returns { acked: [opId], rejected: [{opId,reason}] }.
-  //
-  // REAL IMPLEMENTATION (later):
-  //   const res = await fetch(`${BASE}/sync`, {
-  //     method: 'POST',
-  //     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-  //     body: JSON.stringify({ ops }),
-  //   })
-  //   if (!res.ok) throw new NetworkError(res.status)
-  //   return res.json()  // server dedupes on opId and returns which it accepted
   async pushOps(ops) {
-    await this._delay()
     if (!navigator.onLine) {
       // Mirror a real network failure so the sync engine keeps ops queued.
       throw new Error('offline')
     }
-    // This app has no configured API endpoint. Keep writes queued until a real
-    // server confirms durable receipt; never report a simulated acknowledgement.
     if (!this.configured) throw new Error('Sync server is not configured; local changes remain on this device')
-    const response = await fetch(`${this.baseUrl}/sync`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ops }),
+    const response = await this.request(`${this.baseUrl}/sync`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ops }),
     })
-    if (!response.ok) throw new Error(`Sync failed (${response.status})`)
-    return response.json()
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(result.message || `Sync failed (${response.status})`)
+    return result
   }
 
-  // Placeholder for the eventual server→client direction (initial hydrate,
-  // deltas since a cursor). Returns nothing until the backend defines it.
-  async pull() {
-    await this._delay()
-    return { changes: [], cursor: null }
+  async pull(cursor = 0) {
+    if (!this.configured) return { changes: [], cursor: null }
+    const response = await this.request(`${this.baseUrl}/sync?cursor=${Number(cursor || 0)}`, {
+      credentials: 'include', headers: {},
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(result.message || `Sync pull failed (${response.status})`)
+    return result
   }
 
-  _delay() {
-    // Fixed simulated latency (no Math.random — keeps behaviour deterministic).
-    return new Promise((r) => setTimeout(r, this.latencyMs))
+  async snapshot(cursor = null) {
+    if (!this.configured) throw new Error('Hospital data server is not configured')
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+    const response = await this.request(`${this.baseUrl}/sync/snapshot${query}`, { credentials: 'include', headers: {} })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(result.message || `Hospital snapshot failed (${response.status})`)
+    return result
   }
 }

@@ -13,9 +13,9 @@ export function hospitalStatusPill(status) {
 }
 
 export function txnStatusPill(status) {
-  return status === 'paid'
-    ? { tone: 'active', label: 'Paid' }
-    : { tone: 'failed', label: 'Failed' }
+  if (status === 'paid') return { tone: 'active', label: 'Paid manually' }
+  if (status === 'pending' || status === 'trialing') return { tone: 'pending', label: 'Awaiting manual payment' }
+  return { tone: 'failed', label: 'Payment due' }
 }
 
 export function priorityPill(priority) {

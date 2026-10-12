@@ -54,6 +54,20 @@ export function RequirePerms({ anyOf }) {
   return <Outlet />
 }
 
+export function RequireModule({ code }) {
+  const { user } = useAuth()
+  const { hospitalSlug } = useParams()
+  const backendEnabled = import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
+  if (!backendEnabled || user?.moduleCodes?.includes(code)) return <Outlet />
+  return (
+    <section className="card" role="status">
+      <h2>Module access is locked</h2>
+      <p>This hospital does not currently have access to this module. Contact Dibia administration after arranging manual payment.</p>
+      <a className="btn btn-amber" href={`/${hospitalSlug}/subscription`}>View account and billing</a>
+    </section>
+  )
+}
+
 // Index redirect for `/:hospitalSlug` — send to dashboard or /pos per role (§2).
 export function TenantIndexRedirect() {
   const { landingPath } = useAuth()
