@@ -142,7 +142,7 @@ export default function LandingPage() {
             ) : (
               <>
                 <Link className="btn btn-ghost" to="/login">Sign in</Link>
-                <Link className="btn btn-primary" to="/register">Create your hospital account</Link>
+                <Link className="btn btn-primary" to="/register"><span className="nav-label-full">Create your hospital account</span><span className="nav-label-short">Register</span></Link>
               </>
             )}
           </div>

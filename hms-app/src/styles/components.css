@@ -448,7 +448,7 @@
 }
 
 /* --------------------------------------------------------------- Data table */
-.table-wrap { overflow-x: auto; }
+.table-wrap { max-width: 100%; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table.data { width: 100%; border-collapse: collapse; font-size: 14px; }
 table.data th {
   text-align: left;
@@ -977,6 +977,8 @@ table.data tr.row-info { --row-status: var(--pharm); }
   .stat-row, .stat-row.cols-3, .stat-row.cols-2x3 { grid-template-columns: repeat(2, 1fr); }
   .profile-menu { position: fixed; left: 16px; right: 16px; top: calc(var(--header-h) + 8px); width: auto; }
   .page-title { font-size: 22px; }
+  .page-head .page-actions { width: 100%; margin-left: 0; }
+  .form-actions, .modal-actions { flex-wrap: wrap; }
 }
 .mobile-menu-toggle { display: none; }
 .token-input { min-height: var(--tap); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--hairline); border-radius: var(--r-input); background: var(--input-bg); cursor: text; }
