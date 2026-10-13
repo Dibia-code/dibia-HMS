@@ -19,10 +19,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Local backend databases and SQLite journal files
-/backend/data/*.sqlite
-/backend/data/*.sqlite-shm
-/backend/data/*.sqlite-wal
+# Firebase service account files
+/backend/*service-account*.json
 
 # OS / editor cruft
 .DS_Store

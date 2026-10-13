@@ -1,385 +1,58 @@
 import 'dotenv/config'
 import crypto from 'node:crypto'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import bcrypt from 'bcryptjs'
-import Database from 'better-sqlite3'
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import express from 'express'
 import jwt from 'jsonwebtoken'
-import { canWriteEntity, sanitizeSyncPayload } from './policy.js'
-import { applyFirestoreSync, firestoreStatus, getFirebaseAuth, getFirestoreStore, readFirestoreChanges, readFirestoreSnapshot } from './firestore.js'
+import { getFirestoreStore, getFirebaseAuth, firestoreStatus, applyFirestoreSync, readFirestoreChanges, readFirestoreSnapshot } from './firestore.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const root = path.resolve(__dirname, '..')
-const dbFile = path.resolve(root, process.env.DB_FILE || './data/dibia.sqlite')
-fs.mkdirSync(path.dirname(dbFile), { recursive: true })
-
-const PORT = Number(process.env.PORT || 4000)
-const HOST = process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1')
 const production = process.env.NODE_ENV === 'production'
-const minPasswordLength = production ? 12 : 8
+const PORT = Number(process.env.PORT || 4000)
+const HOST = process.env.HOST || (production ? '0.0.0.0' : '127.0.0.1')
 const JWT_SECRET = process.env.JWT_SECRET || (production ? '' : 'local-development-secret-change-me')
-const origins = String(process.env.FRONTEND_ORIGINS || 'http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174,http://127.0.0.1:5175,http://localhost:5175').split(',').map((value) => value.trim()).filter(Boolean)
+const minPasswordLength = production ? 12 : 8
+const origins = String(process.env.FRONTEND_ORIGINS || 'http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174,http://127.0.0.1:5175,http://localhost:5175').split(',').map((v) => v.trim()).filter(Boolean)
+const isExactHttpsOrigin = (value) => {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.origin === value
+  } catch {
+    return false
+  }
+}
 if (production) {
   const problems = []
   if (JWT_SECRET.length < 32 || /change-me|replace-|development|generate-a-unique/i.test(JWT_SECRET)) problems.push('JWT_SECRET must be a unique random secret of at least 32 characters')
   if (String(process.env.DEMO_MODE).toLowerCase() === 'true') problems.push('DEMO_MODE must be false')
-  if (String(process.env.DATA_STORE || 'sqlite').toLowerCase() !== 'firestore') problems.push('DATA_STORE must be firestore; SQLite is local development storage, not an offline fallback')
-  if (!origins.length || origins.some((origin) => !origin.startsWith('https://'))) problems.push('FRONTEND_ORIGINS must contain only exact HTTPS origins')
-  if (!process.env.FIREBASE_PROJECT_ID || /^your-/i.test(process.env.FIREBASE_PROJECT_ID) || !process.env.FIREBASE_WEB_API_KEY || /^your-/i.test(process.env.FIREBASE_WEB_API_KEY)) problems.push('FIREBASE_PROJECT_ID and FIREBASE_WEB_API_KEY are required')
+  if (!origins.length || origins.some((origin) => !isExactHttpsOrigin(origin))) problems.push('FRONTEND_ORIGINS must contain only exact HTTPS origins without paths or trailing slashes')
+  if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_WEB_API_KEY) problems.push('FIREBASE_PROJECT_ID and FIREBASE_WEB_API_KEY are required')
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON && !process.env.GOOGLE_APPLICATION_CREDENTIALS) problems.push('Firebase Admin credentials are required')
   if (String(process.env.CONSOLE_ADMIN_PASSWORD || '').length < 16) problems.push('CONSOLE_ADMIN_PASSWORD must be at least 16 characters')
-  if (!String(process.env.CONSOLE_ADMIN_EMAIL || '').includes('@') || /example\.com$/i.test(process.env.CONSOLE_ADMIN_EMAIL || '')) problems.push('CONSOLE_ADMIN_EMAIL must be a real admin address')
-  if (!process.env.DB_FILE || !path.isAbsolute(process.env.DB_FILE)) problems.push('DB_FILE must be an absolute path on a persistent encrypted volume for platform control-plane data')
+  if (!String(process.env.CONSOLE_ADMIN_EMAIL || '').includes('@')) problems.push('CONSOLE_ADMIN_EMAIL must be configured')
   if (problems.length) throw new Error(`Unsafe production configuration: ${problems.join('; ')}`)
 }
-const db = new Database(dbFile)
-db.pragma('journal_mode = WAL')
-db.pragma('foreign_keys = ON')
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS tenants (
-    id TEXT PRIMARY KEY,
-    slug TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    logo_url TEXT,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS platform_settings (
-    id TEXT PRIMARY KEY,
-    value_json TEXT NOT NULL DEFAULT '{}',
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS branches (
-    id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL REFERENCES tenants(id),
-    name TEXT NOT NULL,
-    address TEXT,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS staff (
-    id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL REFERENCES tenants(id),
-    branch_id TEXT REFERENCES branches(id),
-    name TEXT NOT NULL,
-    email TEXT NOT NULL UNIQUE,
-    phone TEXT,
-    profession TEXT,
-    password_hash TEXT NOT NULL,
-    roles_json TEXT NOT NULL DEFAULT '[]',
-    perm_grants_json TEXT NOT NULL DEFAULT '[]',
-    perm_denies_json TEXT NOT NULL DEFAULT '[]',
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS refresh_sessions (
-    id TEXT PRIMARY KEY,
-    staff_id TEXT NOT NULL REFERENCES staff(id),
-    token_hash TEXT NOT NULL UNIQUE,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS platform_users (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    roles_json TEXT NOT NULL DEFAULT '[]',
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS platform_refresh_sessions (
-    id TEXT PRIMARY KEY,
-    platform_user_id TEXT NOT NULL REFERENCES platform_users(id),
-    token_hash TEXT NOT NULL UNIQUE,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS modules (
-    id TEXT PRIMARY KEY,
-    code TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    description TEXT,
-    category TEXT NOT NULL,
-    version TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'draft',
-    pricing_model TEXT NOT NULL DEFAULT 'included',
-    price_minor INTEGER NOT NULL DEFAULT 0,
-    config_schema_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS module_dependencies (
-    module_id TEXT NOT NULL REFERENCES modules(id),
-    dependency_module_id TEXT NOT NULL REFERENCES modules(id),
-    PRIMARY KEY (module_id, dependency_module_id)
-  );
-  CREATE TABLE IF NOT EXISTS subscription_plans (
-    id TEXT PRIMARY KEY,
-    code TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    price_minor INTEGER NOT NULL DEFAULT 0,
-    currency TEXT NOT NULL DEFAULT 'NGN',
-    status TEXT NOT NULL DEFAULT 'active',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS plan_modules (
-    plan_id TEXT NOT NULL REFERENCES subscription_plans(id),
-    module_id TEXT NOT NULL REFERENCES modules(id),
-    PRIMARY KEY (plan_id, module_id)
-  );
-  CREATE TABLE IF NOT EXISTS subscriptions (
-    id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL REFERENCES tenants(id),
-    plan_id TEXT NOT NULL REFERENCES subscription_plans(id),
-    status TEXT NOT NULL DEFAULT 'trialing',
-    starts_at TEXT NOT NULL,
-    renews_at TEXT,
-    grace_ends_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS module_entitlements (
-    tenant_id TEXT NOT NULL REFERENCES tenants(id),
-    module_id TEXT NOT NULL REFERENCES modules(id),
-    source TEXT NOT NULL DEFAULT 'plan',
-    status TEXT NOT NULL DEFAULT 'entitled',
-    starts_at TEXT NOT NULL,
-    ends_at TEXT,
-    PRIMARY KEY (tenant_id, module_id)
-  );
-  CREATE TABLE IF NOT EXISTS tenant_modules (
-    tenant_id TEXT NOT NULL REFERENCES tenants(id),
-    module_id TEXT NOT NULL REFERENCES modules(id),
-    status TEXT NOT NULL DEFAULT 'disabled',
-    settings_json TEXT NOT NULL DEFAULT '{}',
-    activated_by TEXT,
-    activated_at TEXT,
-    PRIMARY KEY (tenant_id, module_id)
-  );
-  CREATE TABLE IF NOT EXISTS platform_audit_logs (
-    id TEXT PRIMARY KEY,
-    platform_user_id TEXT,
-    action TEXT NOT NULL,
-    entity TEXT,
-    record_id TEXT,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS sync_operations (
-    tenant_id TEXT NOT NULL,
-    op_id TEXT NOT NULL,
-    result_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, op_id)
-  );
-  CREATE TABLE IF NOT EXISTS records (
-    tenant_id TEXT NOT NULL,
-    entity TEXT NOT NULL,
-    record_id TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    deleted INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, entity, record_id)
-  );
-  CREATE TABLE IF NOT EXISTS sync_changes (
-    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-    tenant_id TEXT NOT NULL,
-    entity TEXT NOT NULL,
-    record_id TEXT NOT NULL,
-    operation TEXT NOT NULL,
-    payload_json TEXT,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS audit_log (
-    id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL,
-    actor_id TEXT NOT NULL,
-    action TEXT NOT NULL,
-    entity TEXT,
-    record_id TEXT,
-    metadata_json TEXT,
-    created_at TEXT NOT NULL
-  );
-`)
-
-for (const [column, definition] of [['perm_grants_json', "TEXT NOT NULL DEFAULT '[]'"], ['perm_denies_json', "TEXT NOT NULL DEFAULT '[]'"]]) {
-  try { db.exec(`ALTER TABLE staff ADD COLUMN ${column} ${definition}`) } catch (error) { if (!String(error.message).includes('duplicate column name')) throw error }
-}
-
-if (production && db.prepare("SELECT 1 FROM tenants WHERE slug = 'demohospital' OR id IN ('ph_johncool', 'ph_dibia', 'ph_demo_hosp') LIMIT 1").get()) {
-  throw new Error('Unsafe production database: demo/PMS tenant seed data is present; use a clean production database and migrate approved hospital data explicitly')
-}
-
-try { db.prepare("ALTER TABLE tenants ADD COLUMN status TEXT NOT NULL DEFAULT 'active'").run() } catch (error) { if (!String(error.message).includes('duplicate column name')) throw error }
-for (const [column, definition] of [['address', 'TEXT'], ['phone', 'TEXT']]) {
-  try { db.exec(`ALTER TABLE tenants ADD COLUMN ${column} ${definition}`) } catch (error) { if (!String(error.message).includes('duplicate column name')) throw error }
-}
-db.exec(`
-  CREATE TABLE IF NOT EXISTS platform_support_tickets (
-    id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), issue TEXT NOT NULL,
-    priority TEXT NOT NULL DEFAULT 'medium', status TEXT NOT NULL DEFAULT 'open',
-    reply TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS platform_messages (
-    id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), body TEXT NOT NULL,
-    sent_by TEXT NOT NULL, created_at TEXT NOT NULL
-  );
-`)
-
-const now = () => new Date().toISOString()
-const id = (prefix) => `${prefix}_${crypto.randomUUID()}`
-const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex')
-const json = (value) => JSON.stringify(value ?? {})
-const parse = (value, fallback = {}) => {
-  try { return value ? JSON.parse(value) : fallback } catch { return fallback }
-}
-
-function seedDemoData() {
-  const preferredTenantId = 'hosp_demo'
-  const preferredBranchId = 'br_demo_hosp'
-  const timestamp = now()
-  const insertTenant = db.prepare('INSERT INTO tenants (id, slug, name, created_at) VALUES (?, ?, ?, ?)')
-  const insertBranch = db.prepare('INSERT INTO branches (id, tenant_id, name, address, created_at) VALUES (?, ?, ?, ?, ?)')
-  const insertStaff = db.prepare('INSERT INTO staff (id, tenant_id, branch_id, name, email, phone, profession, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-  const demoAccounts = [
-    ['staff_demohospital_admin', 'Ifeoma Nwachukwu', 'admin@demohospital.ng', '+2348035550101', 'Hospital administrator', ['facility_admin']],
-    ['staff_demohospital_doctor', 'Dr. Daniel Okafor', 'doctor@demohospital.ng', '+2348035550105', 'Doctor', ['doctor']],
-    ['staff_demohospital_nurse', 'Sarah Eze', 'nurse@demohospital.ng', '+2348035550106', 'Nurse', ['nurse']],
-    ['staff_demohospital_lab', 'Ikenna Obi', 'lab@demohospital.ng', '+2348035550107', 'Laboratory technician', ['laboratory_technician']],
-    ['staff_demohospital_reception', 'Amaka Obi', 'reception@demohospital.ng', '+2348035550102', 'Receptionist', ['receptionist']],
-    ['staff_demohospital_cashier', 'Bola Adeyemi', 'cashier@demohospital.ng', '+2348035550103', 'Payments staff', ['cashier']],
-    ['staff_demohospital_pharmacy', 'Chuka Eze', 'pharmacy@demohospital.ng', '+2348035550104', 'Pharmacist', ['pharmacist']],
-    ['staff_demohospital_manager', 'Adaeze John', 'manager@demohospital.ng', '+2348035550108', 'Hospital management', ['ceo_owner']],
-    ['staff_demohospital_patient', 'Musa Ibrahim', 'patient@demohospital.ng', '+2348035550109', 'Patient', ['patient']],
-    ['staff_demohospital_hr', 'Ngozi Eze', 'hr@demohospital.ng', '+2348035550110', 'HR Officer', ['hr_officer']],
-  ]
-  const transaction = db.transaction(() => {
-    const existing = db.prepare('SELECT id FROM tenants WHERE slug = ?').get('demohospital')
-    const tenantId = existing?.id || preferredTenantId
-    if (!existing) {
-      insertTenant.run(tenantId, 'demohospital', 'Demo Hospital', timestamp)
-    }
-    const existingBranch = db.prepare('SELECT id FROM branches WHERE tenant_id = ? ORDER BY created_at LIMIT 1').get(tenantId)
-    const branchId = existingBranch?.id || preferredBranchId
-    if (!existingBranch) insertBranch.run(branchId, tenantId, 'Main Branch', 'Demo Hospital Road, Nigeria', timestamp)
-    for (const [staffId, name, email, phone, profession, roles] of demoAccounts) {
-      insertStaff.run(staffId, tenantId, branchId, name, email, phone, profession, bcrypt.hashSync('DemoPass123!', 12), json(roles), timestamp, timestamp)
-    }
-  })
-  try {
-    transaction()
-  } catch (error) {
-    if (!String(error.message).includes('UNIQUE constraint failed: staff.email')) throw error
-    // Existing demo installations already have the administrator row. Add any
-    // missing dashboard accounts without replacing user-managed credentials.
-    const existingTenant = db.prepare('SELECT id FROM tenants WHERE slug = ?').get('demohospital')
-    if (!existingTenant) throw error
-    const branch = db.prepare('SELECT id FROM branches WHERE tenant_id = ? ORDER BY created_at LIMIT 1').get(existingTenant.id)
-    for (const [staffId, name, email, phone, profession, roles] of demoAccounts) {
-      db.prepare('INSERT OR IGNORE INTO staff (id, tenant_id, branch_id, name, email, phone, profession, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(staffId, existingTenant.id, branch?.id || null, name, email, phone, profession, bcrypt.hashSync('DemoPass123!', 12), json(roles), timestamp, timestamp)
-    }
-  }
-  const demoTenant = db.prepare('SELECT id FROM tenants WHERE slug = ?').get('demohospital')
-  if (demoTenant && !db.prepare('SELECT id FROM platform_support_tickets WHERE tenant_id = ? LIMIT 1').get(demoTenant.id)) {
-    db.prepare('INSERT INTO platform_support_tickets (id, tenant_id, issue, priority, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run('ticket_demo_sync', demoTenant.id, 'Sync reported as failed on a reception device', 'high', 'open', timestamp, timestamp)
-  }
-}
-if (String(process.env.DEMO_MODE || '').toLowerCase() === 'true') seedDemoData()
-
-function seedPlatform() {
-  const timestamp = now()
-  const bootstrapEmail = String(process.env.CONSOLE_ADMIN_EMAIL || process.env.PLATFORM_ADMIN_EMAIL || '').trim().toLowerCase()
-  const bootstrapPassword = String(process.env.CONSOLE_ADMIN_PASSWORD || process.env.PLATFORM_ADMIN_PASSWORD || '')
-  if (bootstrapEmail && bootstrapPassword.length >= 12) {
-    const hash = bcrypt.hashSync(bootstrapPassword, 12)
-    const existing = db.prepare('SELECT id FROM platform_users WHERE id = ? OR lower(email) = ?').get('platform_admin_bootstrap', bootstrapEmail)
-    if (existing) {
-      db.prepare('UPDATE platform_users SET email = ?, password_hash = ?, roles_json = ?, active = 1, updated_at = ? WHERE id = ?').run(bootstrapEmail, hash, json(['platform_super_admin']), timestamp, existing.id)
-    } else {
-      db.prepare('INSERT INTO platform_users (id, name, email, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run('platform_admin_bootstrap', 'Dibia Platform Super Admin', bootstrapEmail, hash, json(['platform_super_admin']), timestamp, timestamp)
-    }
-  }
-
-  const modules = [
-    ['mod_reception', 'reception', 'Reception', 'Patient registration and identity capture', 'operations', 'included', 0],
-    ['mod_queue', 'queue', 'Queue', 'Care routing and visit flow', 'operations', 'included', 0],
-    ['mod_cashier', 'cashier', 'Cashier', 'Patient billing and payment collection', 'finance', 'included', 0],
-    ['mod_inventory', 'inventory', 'Inventory', 'Hospital stock and supplies', 'operations', 'subscription', 1500000],
-    ['mod_reports', 'reports', 'Reports', 'Hospital operational reports', 'administration', 'included', 0],
-    ['mod_patient', 'patient-management', 'Patient Management', 'Central patient registry, identity and visit history', 'core', 'included', 0],
-    ['mod_appointments', 'appointments', 'Appointments', 'Scheduling, follow-ups and reminders', 'operations', 'included', 0],
-    ['mod_emr', 'emr', 'Electronic Medical Records', 'Clinical encounters, diagnoses and medical notes', 'clinical', 'subscription', 2500000],
-    ['mod_laboratory', 'laboratory', 'Laboratory Management', 'Requests, samples, results and verification', 'clinical', 'subscription', 1800000],
-    ['mod_pharmacy', 'pharmacy', 'Pharmacy Management', 'Prescriptions, dispensing and medicine stock', 'clinical', 'subscription', 1800000],
-    ['mod_billing', 'billing', 'Billing & Accounts', 'Invoices, payments, receipts and insurance', 'finance', 'subscription', 1500000],
-    ['mod_inpatient', 'inpatient', 'Inpatient Management', 'Admissions, wards, beds and discharge', 'clinical', 'subscription', 2200000],
-    ['mod_radiology', 'radiology', 'Radiology & Imaging', 'Imaging requests, worklists and reports', 'clinical', 'addon', 2000000],
-    ['mod_hr', 'hr', 'HR & Payroll', 'Staff, attendance, leave and payroll', 'administration', 'addon', 1200000],
-    ['mod_analytics', 'analytics', 'Advanced Analytics', 'Cross-department operational insights', 'administration', 'addon', 1400000],
-    ['mod_telemedicine', 'telemedicine', 'Telemedicine', 'Remote consultations and secure sessions', 'clinical', 'addon', 1600000],
-  ]
-  const insertModule = db.prepare('INSERT OR IGNORE INTO modules (id, code, name, description, category, version, status, pricing_model, price_minor, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-  for (const [idValue, code, name, description, category, pricingModel, priceMinor] of modules) {
-    insertModule.run(idValue, code, name, description, category, '1.0.0', 'published', pricingModel, priceMinor, timestamp, timestamp)
-  }
-  const plan = db.prepare('INSERT OR IGNORE INTO subscription_plans (id, code, name, price_minor, currency, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-  plan.run('plan_professional', 'professional', 'Professional', 9500000, 'NGN', 'active', timestamp, timestamp)
-  for (const [code, name, fee] of [['freemium', 'Freemium', 0], ['small', 'Small', 25000], ['medium', 'Medium', 150000], ['large', 'Large', 600000]]) {
-    plan.run(`plan_${code}`, code, name, fee * 100, 'NGN', 'active', timestamp, timestamp)
-  }
-  if (String(process.env.DEMO_MODE || '').toLowerCase() === 'true') {
-    const demoFacilities = [
-      { id: 'hosp_grace', slug: 'grace-medical-centre', name: 'Grace Medical Centre', address: 'Lagos, Lagos State', status: 'pending', planId: 'plan_freemium', subscriptionStatus: 'active' },
-      { id: 'hosp_citycare', slug: 'citycare-hospital', name: 'CityCare Hospital', address: 'Ibadan, Oyo State', status: 'active', planId: 'plan_small', subscriptionStatus: 'past_due' },
-    ]
-    for (const facility of demoFacilities) {
-      db.prepare('INSERT OR IGNORE INTO tenants (id, slug, name, address, status, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(facility.id, facility.slug, facility.name, facility.address, facility.status, timestamp)
-      db.prepare('INSERT OR IGNORE INTO branches (id, tenant_id, name, address, created_at) VALUES (?, ?, ?, ?, ?)').run(`${facility.id}_main`, facility.id, 'Main Branch', facility.address, timestamp)
-      db.prepare('INSERT OR IGNORE INTO subscriptions (id, tenant_id, plan_id, status, starts_at, renews_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(`${facility.id}_subscription`, facility.id, facility.planId, facility.subscriptionStatus, timestamp, new Date(Date.now() + 30 * 86400000).toISOString(), timestamp, timestamp)
-    }
-    db.prepare('INSERT OR IGNORE INTO platform_support_tickets (id, tenant_id, issue, priority, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run('ticket_demo_payment', 'hosp_citycare', 'Please confirm our subscription payment', 'medium', 'open', timestamp, timestamp)
-  }
-  const planModule = db.prepare('INSERT OR IGNORE INTO plan_modules (plan_id, module_id) SELECT ?, id FROM modules WHERE code IN (?, ?, ?, ?, ?, ?, ?)')
-  planModule.run('plan_professional', 'patient-management', 'appointments', 'emr', 'laboratory', 'pharmacy', 'billing', 'inpatient')
-
-  const demoTenant = db.prepare('SELECT id FROM tenants WHERE slug = ?').get('demohospital')
-  if (!demoTenant) return
-  const subscription = db.prepare('INSERT OR IGNORE INTO subscriptions (id, tenant_id, plan_id, status, starts_at, renews_at, grace_ends_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-  subscription.run('sub_demohospital_professional', demoTenant.id, 'plan_small', 'active', timestamp, new Date(Date.now() + 30 * 86400000).toISOString(), new Date(Date.now() + 37 * 86400000).toISOString(), timestamp, timestamp)
-  const entitlement = db.prepare('INSERT OR IGNORE INTO module_entitlements (tenant_id, module_id, source, status, starts_at) SELECT ?, id, ?, ?, ? FROM modules WHERE code IN (?, ?, ?, ?, ?, ?, ?)')
-  entitlement.run(demoTenant.id, 'professional-plan', 'entitled', timestamp, 'patient-management', 'appointments', 'emr', 'laboratory', 'pharmacy', 'billing', 'inpatient')
-  const tenantModule = db.prepare('INSERT OR IGNORE INTO tenant_modules (tenant_id, module_id, status, activated_by, activated_at) SELECT ?, id, ?, ?, ? FROM modules WHERE code IN (?, ?, ?, ?, ?, ?, ?)')
-  tenantModule.run(demoTenant.id, 'enabled', 'platform_admin_bootstrap', timestamp, 'patient-management', 'appointments', 'emr', 'laboratory', 'pharmacy', 'billing', 'inpatient')
-}
-seedPlatform()
 
 const app = express()
 app.disable('x-powered-by')
 if (production) app.set('trust proxy', 1)
+const now = () => new Date().toISOString()
+const id = (prefix) => `${prefix}_${crypto.randomUUID()}`
+const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex')
+const db = () => getFirestoreStore()
+const authAdmin = () => getFirebaseAuth()
+const appAuth = (uid) => db().collection('staffProfiles').doc(uid)
+const tenantRef = (tenantId) => db().collection('tenants').doc(tenantId)
+const platformUserRef = (uid) => db().collection('platformUsers').doc(uid)
+const apiError = (res, message, status = 500) => res.status(status).json({ message })
+const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next)
+
 app.use((req, res, next) => {
-  res.set({
-    'X-Content-Type-Options': 'nosniff',
-    'X-Frame-Options': 'DENY',
-    'Referrer-Policy': 'no-referrer',
-    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-    'Cache-Control': 'no-store',
-    ...(production ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}),
-  })
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Cache-Control': 'no-store', ...(production ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}) })
   next()
 })
-const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next)
-app.use(cors({ origin: (origin, callback) => !origin || origins.includes(origin) ? callback(null, true) : callback(new Error('Origin not allowed')), credentials: true, methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }))
+app.use(cors({ origin: (origin, cb) => !origin || origins.includes(origin) ? cb(null, true) : cb(new Error('Origin not allowed')), credentials: true, methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }))
 app.use(express.json({ limit: '256kb', strict: true }))
 app.use(cookieParser())
-
-// Cookie-authenticated endpoints are vulnerable to cross-site request forgery.
-// Restrict browser state changes to the explicitly configured app origins.
 app.use((req, res, next) => {
   if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return next()
   const origin = req.get('origin')
@@ -388,1267 +61,277 @@ app.use((req, res, next) => {
   next()
 })
 
-// Basic per-process credential throttling; production deployments must also
-// apply a shared rate limit at the gateway/load balancer for multi-instance use.
-const authAttempts = new Map()
 function limitAuthAttempts(req, res, next) {
-  const key = `${req.path}:${req.ip}`
-  const current = authAttempts.get(key)
   const time = Date.now()
-  if (current && current.resetAt <= time) authAttempts.delete(key)
-  const recent = authAttempts.get(key) || { count: 0, resetAt: time + 15 * 60 * 1000 }
-  if (recent.count >= 10) return res.status(429).json({ message: 'Too many sign-in attempts. Try again later.' })
-  recent.count += 1
-  authAttempts.set(key, recent)
-  if (authAttempts.size > 5000) {
-    for (const [attemptKey, value] of authAttempts) if (value.resetAt <= time) authAttempts.delete(attemptKey)
-  }
-  next()
-}
-
-function issueAccess(staff) {
-  return jwt.sign({ sub: staff.id, tenantId: staff.tenant_id, roles: parse(staff.roles_json, []), aud: 'hospital' }, JWT_SECRET, { expiresIn: '15m' })
-}
-
-function issuePlatformAccess(user) {
-  return jwt.sign({ sub: user.id, roles: parse(user.roles_json, []), aud: 'platform' }, JWT_SECRET, { expiresIn: '15m' })
-}
-
-function publicSession(staff, tenant, branch) {
-  return {
-    user: { id: staff.id, name: staff.name, email: staff.email, roles: parse(staff.roles_json, []), hospitalId: tenant.id, hospitalSlug: tenant.slug, hospitalName: tenant.name, branchId: branch?.id || staff.branch_id || null },
-    tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name, logoUrl: tenant.logo_url || null },
-    branch: branch ? { id: branch.id, name: branch.name, address: branch.address } : null,
-  }
-}
-
-function firebaseSession(profile, tenant, branch = null) {
-  const roles = profile.roles || ['facility_admin']
-  const accessToken = jwt.sign({ sub: profile.id, tenantId: profile.tenantId, roles, aud: 'hospital' }, JWT_SECRET, { expiresIn: '15m' })
-  return {
-    accessToken,
-    user: { id: profile.id, name: profile.name, email: profile.email, roles, hospitalId: profile.tenantId, hospitalSlug: tenant.slug, hospitalName: tenant.name, branchId: profile.branchId || branch?.id || null },
-    tenant,
-    branch,
-  }
-}
-
-function setRefreshCookie(res, token) {
-  res.cookie('dibia_refresh', token, { httpOnly: true, sameSite: production ? 'strict' : 'lax', secure: production, path: '/', maxAge: 7 * 24 * 60 * 60 * 1000 })
-}
-
-function setConsoleRefreshCookie(res, token) {
-  res.cookie('dibia_console_refresh', token, { httpOnly: true, sameSite: production ? 'strict' : 'lax', secure: production, path: '/', maxAge: 7 * 24 * 60 * 60 * 1000 })
-}
-
-async function firebasePasswordSignIn(identifier, password) {
-  const apiKey = String(process.env.FIREBASE_WEB_API_KEY || '').trim()
-  if (!apiKey) throw new Error('FIREBASE_WEB_API_KEY is required for Firebase password authentication')
-  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(apiKey)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: identifier, password, returnSecureToken: true }) })
-  const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload?.error?.message || 'Invalid login details')
-  return payload
-}
-
-async function firebaseRefresh(rawRefreshToken) {
-  const apiKey = String(process.env.FIREBASE_WEB_API_KEY || '').trim()
-  if (!apiKey) return null
-  const response = await fetch(`https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(apiKey)}`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rawRefreshToken }) })
-  const payload = await response.json().catch(() => ({}))
-  if (!response.ok) return null
-  return payload
-}
-
-async function firestoreHospitalSession(idToken) {
-  const firebaseAuth = getFirebaseAuth()
-  const decoded = await firebaseAuth.verifyIdToken(idToken)
-  const store = getFirestoreStore()
-  const profileSnapshot = await store.collection('staffProfiles').doc(decoded.uid).get()
-  if (!profileSnapshot.exists) throw new Error('Hospital account profile not found')
-  const profile = { id: decoded.uid, ...profileSnapshot.data() }
-  if (profile.active === false) throw new Error('This account is deactivated')
-  const tenantSnapshot = await store.collection('tenants').doc(profile.tenantId).get()
-  if (!tenantSnapshot.exists) throw new Error('Hospital tenant not found')
-  const tenant = { id: tenantSnapshot.id, ...tenantSnapshot.data() }
-  if (['pending', 'rejected', 'suspended'].includes(tenant.status)) {
-    const error = new Error(tenant.status === 'pending' ? 'Your hospital registration is awaiting approval' : 'This hospital workspace is not active')
-    error.code = 'HOSPITAL_NOT_ACTIVE'
-    throw error
-  }
-  return { profile, tenant }
-}
-
-function findStaff(identifier) {
-  return db.prepare('SELECT * FROM staff WHERE lower(email) = lower(?) OR phone = ?').get(identifier, identifier)
-}
-
-function createRefreshSession(staffId) {
-  const raw = crypto.randomBytes(48).toString('hex')
-  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-  db.prepare('INSERT INTO refresh_sessions (id, staff_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)').run(id('session'), staffId, sha256(raw), expires, now())
-  return raw
-}
-
-function createPlatformRefreshSession(platformUserId) {
-  const raw = crypto.randomBytes(48).toString('hex')
-  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-  db.prepare('INSERT INTO platform_refresh_sessions (id, platform_user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)').run(id('platform_session'), platformUserId, sha256(raw), expires, now())
-  return raw
-}
-
-function auth(req, res, next) {
-  const header = req.get('authorization') || ''
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null
-  if (!token) return res.status(401).json({ message: 'Authentication required' })
-  try {
-    req.auth = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] })
-    if (req.auth.aud !== 'hospital') return res.status(401).json({ message: 'Hospital session required' })
-    if (firestoreStatus().enabled) {
-      getFirestoreStore().collection('staffProfiles').doc(req.auth.sub).get().then((snapshot) => {
-        if (!snapshot.exists) return res.status(401).json({ message: 'Hospital account is inactive' })
-        const profile = snapshot.data()
-        if (profile.active === false || profile.tenantId !== req.auth.tenantId) return res.status(401).json({ message: 'Hospital account is inactive' })
-        return getFirestoreStore().collection('tenants').doc(req.auth.tenantId).get().then((tenantSnapshot) => {
-          const status = tenantSnapshot.data()?.status
-          if (!tenantSnapshot.exists || status !== 'active') return res.status(403).json({
-            code: status === 'pending' ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE',
-            message: status === 'pending' ? 'Hospital registration is awaiting approval' : 'Hospital workspace is not active',
-          })
-          req.auth.roles = Array.isArray(profile.roles) ? profile.roles : []
-          req.auth.branchId = profile.branchId || null
-          return next()
-        })
-      }).catch(() => res.status(503).json({ message: 'Could not verify hospital account' }))
-      return
-    }
-    const staff = db.prepare('SELECT roles_json, perm_grants_json, perm_denies_json, branch_id, active FROM staff WHERE id = ? AND tenant_id = ?').get(req.auth.sub, req.auth.tenantId)
-    if (!staff || !staff.active) return res.status(401).json({ message: 'Hospital account is inactive' })
-    const tenant = db.prepare('SELECT status FROM tenants WHERE id = ?').get(req.auth.tenantId)
-    if (!tenant || tenant.status !== 'active') return res.status(403).json({
-      code: tenant?.status === 'pending' ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE',
-      message: tenant?.status === 'pending' ? 'Hospital registration is awaiting approval' : 'Hospital workspace is not active',
+  const isRegistration = req.path === '/auth/register'
+  const windowMs = isRegistration ? 3600000 : 900000
+  const ipLimit = isRegistration ? 100 : 1000
+  const accountLimit = isRegistration ? 5 : 10
+  const identity = String(req.body?.email || req.body?.identifier || '').trim().toLowerCase()
+  const limits = [{ ref: db().collection('authRateLimits').doc(sha256(`${req.path}:ip:${req.ip}`)), max: ipLimit }]
+  if (identity) limits.push({ ref: db().collection('authRateLimits').doc(sha256(`${req.path}:account:${identity}`)), max: accountLimit })
+  db().runTransaction(async (transaction) => {
+    const snapshots = await Promise.all(limits.map(({ ref }) => transaction.get(ref)))
+    const next = snapshots.map((snapshot, index) => {
+      const prior = snapshot.data()
+      if (!prior || prior.resetAt <= time) return { count: 1, resetAt: time + windowMs }
+      if (prior.count >= limits[index].max) return null
+      return { count: prior.count + 1, resetAt: prior.resetAt }
     })
-    req.auth.roles = parse(staff.roles_json, [])
-    req.auth.permGrants = parse(staff.perm_grants_json, [])
-    req.auth.permDenies = parse(staff.perm_denies_json, [])
-    req.auth.branchId = staff.branch_id || null
-    return next()
-  } catch {
-    return res.status(401).json({ message: 'Access token expired or invalid' })
-  }
-}
-
-function platformAuth(req, res, next) {
-  const header = req.get('authorization') || ''
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null
-  if (!token) return res.status(401).json({ message: 'Platform authentication required' })
-  try {
-    req.auth = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] })
-    if (req.auth.aud !== 'platform') return res.status(401).json({ message: 'Platform session required' })
-    const user = db.prepare('SELECT roles_json, active FROM platform_users WHERE id = ?').get(req.auth.sub)
-    const roles = user?.active ? parse(user.roles_json, []) : []
-    if (!roles.includes('platform_super_admin')) return res.status(403).json({ message: 'Platform Super Admin access required' })
-    req.auth.roles = roles
-    return next()
-  } catch {
-    return res.status(401).json({ message: 'Platform access token expired or invalid' })
-  }
-}
-
-function requireRole(...roles) {
-  return (req, res, next) => {
-    if (!roles.some((role) => req.auth.roles?.includes(role))) return res.status(403).json({ message: 'You do not have permission for this action' })
+    if (next.some((value) => value === null)) return false
+    next.forEach((value, index) => transaction.set(limits[index].ref, value))
+    return true
+  }).then((allowed) => {
+    if (!allowed) return res.status(429).json({ message: 'Too many sign-in attempts. Try again later.' })
     next()
-  }
+  }).catch(next)
 }
 
-function recordAudit(tenantId, actorId, action, entity = null, recordId = null, metadata = {}) {
-  db.prepare('INSERT INTO audit_log (id, tenant_id, actor_id, action, entity, record_id, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id('audit'), tenantId, actorId, action, entity, recordId, json(metadata), now())
+function setCookie(res, name, value) {
+  res.cookie(name, value, { httpOnly: true, sameSite: production ? 'strict' : 'lax', secure: production, path: '/', maxAge: 7 * 86400000 })
 }
-
-function ensureSqliteTenantSnapshot(tenantId) {
-  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenantId)
-  if (!tenant) return
-  const branches = db.prepare('SELECT * FROM branches WHERE tenant_id = ?').all(tenantId)
-  const staffRows = db.prepare('SELECT * FROM staff WHERE tenant_id = ?').all(tenantId)
-  const records = [
-    { entity: 'hospitals', recordId: tenantId, payload: { id: tenantId, hospitalId: tenantId, slug: tenant.slug, name: tenant.name, address: tenant.address || '', phone: tenant.phone || '', status: tenant.status, createdAt: tenant.created_at } },
-    ...branches.map((branch) => ({ entity: 'branches', recordId: branch.id, payload: { id: branch.id, hospitalId: tenantId, branchId: branch.id, name: branch.name, address: branch.address || '', isMain: branch.name === 'Main Branch', createdAt: branch.created_at } })),
-    ...staffRows.flatMap((staff) => {
-      const roles = parse(staff.roles_json, [])
-      return [
-        { entity: 'staff', recordId: staff.id, payload: { id: staff.id, hospitalId: tenantId, branchId: staff.branch_id || null, name: staff.name, email: staff.email, phone: staff.phone || '', profession: staff.profession || '', active: !!staff.active, createdAt: staff.created_at } },
-        ...roles.map((role) => ({ entity: 'staff_roles', recordId: `${staff.id}__${role}`, payload: { id: `${staff.id}__${role}`, hospitalId: tenantId, staffId: staff.id, role } })),
-      ]
-    }),
-  ]
-  const insertRecord = db.prepare('INSERT OR IGNORE INTO records (tenant_id, entity, record_id, payload_json, deleted, updated_at) VALUES (?, ?, ?, ?, 0, ?)')
-  const insertChange = db.prepare('INSERT INTO sync_changes (tenant_id, entity, record_id, operation, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-  const timestamp = now()
-  db.transaction(() => {
-    for (const record of records) {
-      const result = insertRecord.run(tenantId, record.entity, record.recordId, json(record.payload), timestamp)
-      if (result.changes) insertChange.run(tenantId, record.entity, record.recordId, 'create', json(record.payload), timestamp)
-    }
-    const hospitalRecord = db.prepare("SELECT payload_json FROM records WHERE tenant_id = ? AND entity = 'hospitals' AND record_id = ?").get(tenantId, tenantId)
-    if (hospitalRecord) {
-      const current = parse(hospitalRecord.payload_json, {})
-      if (current.status !== tenant.status) {
-        const payload = { ...current, status: tenant.status }
-        db.prepare("UPDATE records SET payload_json = ?, updated_at = ? WHERE tenant_id = ? AND entity = 'hospitals' AND record_id = ?").run(json(payload), timestamp, tenantId, tenantId)
-        insertChange.run(tenantId, 'hospitals', tenantId, 'update', json(payload), timestamp)
-      }
-    }
-  })()
+function clearCookie(res, name) { res.clearCookie(name, { httpOnly: true, sameSite: production ? 'strict' : 'lax', secure: production, path: '/' }) }
+async function saveRefreshSession(token, uid, audience) {
+  const createdAt = now()
+  await db().collection('refreshSessions').doc(sha256(token)).set({ uid, audience, createdAt, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() })
 }
-
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'dibia-hms-backend', time: now(), dataStore: process.env.DATA_STORE || 'sqlite', firestore: firestoreStatus() }))
-
-app.post('/auth/register', limitAuthAttempts, asyncRoute(async (req, res) => {
-  const hospitalName = String(req.body?.hospitalName || '').trim()
-  const ownerName = String(req.body?.ownerName || '').trim()
-  const email = String(req.body?.email || '').trim().toLowerCase()
-  const password = String(req.body?.password || '')
-  const phone = String(req.body?.phone || '').trim()
-  const address = String(req.body?.address || '').trim()
-  if (!hospitalName || !ownerName || !email || password.length < minPasswordLength) return res.status(400).json({ message: `Hospital name, owner name, email, and a ${minPasswordLength}-character password are required` })
-
-  if (!firestoreStatus().enabled) {
-    if (db.prepare('SELECT id FROM staff WHERE lower(email) = lower(?)').get(email)) return res.status(409).json({ message: 'An account with that email already exists' })
-    const baseSlug = hospitalName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'hospital'
-    let slug = baseSlug
-    for (let suffix = 2; db.prepare('SELECT id FROM tenants WHERE slug = ?').get(slug); suffix += 1) slug = `${baseSlug}-${suffix}`.slice(0, 50)
-    const tenantId = id('hospital')
-    const branchId = id('branch')
-    const staffId = id('staff')
-    const timestamp = now()
-    const roles = ['facility_admin']
-    const create = db.transaction(() => {
-      db.prepare('INSERT INTO tenants (id, slug, name, address, phone, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(tenantId, slug, hospitalName, address, phone, 'pending', timestamp)
-      db.prepare('INSERT INTO branches (id, tenant_id, name, address, created_at) VALUES (?, ?, ?, ?, ?)').run(branchId, tenantId, 'Main Branch', address, timestamp)
-      db.prepare('INSERT INTO staff (id, tenant_id, branch_id, name, email, phone, profession, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(staffId, tenantId, branchId, ownerName, email, phone, 'Hospital administrator', bcrypt.hashSync(password, 12), json(roles), timestamp, timestamp)
-      const initialRecords = [
-        { entity: 'hospitals', recordId: tenantId, payload: { id: tenantId, hospitalId: tenantId, slug, name: hospitalName, address, phone, email, status: 'pending', createdAt: timestamp } },
-        { entity: 'branches', recordId: branchId, payload: { id: branchId, hospitalId: tenantId, branchId, name: 'Main Branch', address, isMain: true, createdAt: timestamp } },
-        { entity: 'staff', recordId: staffId, payload: { id: staffId, hospitalId: tenantId, branchId, name: ownerName, email, phone, profession: 'Hospital administrator', active: true, createdAt: timestamp } },
-        { entity: 'staff_roles', recordId: `${staffId}__facility_admin`, payload: { id: `${staffId}__facility_admin`, hospitalId: tenantId, staffId, role: 'facility_admin' } },
-      ]
-      for (const row of initialRecords) {
-        db.prepare('INSERT INTO records (tenant_id, entity, record_id, payload_json, deleted, updated_at) VALUES (?, ?, ?, ?, 0, ?)').run(tenantId, row.entity, row.recordId, json(row.payload), timestamp)
-        db.prepare('INSERT INTO sync_changes (tenant_id, entity, record_id, operation, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(tenantId, row.entity, row.recordId, 'create', json(row.payload), timestamp)
-      }
-    })
-    try { create() } catch (error) { return res.status(400).json({ message: production ? 'Could not create hospital account' : error.message || 'Could not create hospital account' }) }
-    const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(staffId)
-    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenantId)
-    const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(branchId)
-    recordAudit(tenantId, staffId, 'hospital.registered', 'hospital', tenantId)
-    return res.status(201).json({ status: 'pending', message: 'Registration received. A Dibia administrator must approve your hospital before you can sign in.', ...publicSession(staff, tenant, branch) })
-  }
-
-  const store = getFirestoreStore()
-  const firebaseAuth = getFirebaseAuth()
-  let userRecord
+function accessToken(claims) { return jwt.sign(claims, JWT_SECRET, { expiresIn: '15m' }) }
+function session(profile, tenant, branch = null) {
+  const roles = Array.isArray(profile.roles) ? profile.roles : ['facility_admin']
+  return { accessToken: accessToken({ sub: profile.id, tenantId: profile.tenantId, roles, aud: 'hospital' }), user: { id: profile.id, name: profile.name, email: profile.email, roles, hospitalId: profile.tenantId, hospitalSlug: tenant.slug, hospitalName: tenant.name, branchId: profile.branchId || branch?.id || null }, tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name, logoUrl: tenant.logoUrl || null }, branch }
+}
+async function verifyHospital(req, res, next) {
   try {
-    userRecord = await firebaseAuth.createUser({ email, password, displayName: ownerName, phoneNumber: /^\+[1-9]\d{7,14}$/.test(phone) ? phone : undefined })
-    const tenantId = id('tenant')
-    const baseSlug = hospitalName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `hospital-${tenantId.slice(-6)}`
-    let slug = baseSlug
-    for (let suffix = 2; (await store.collection('tenantSlugs').doc(slug).get()).exists; suffix += 1) slug = `${baseSlug}-${suffix}`.slice(0, 50)
-    const branchId = id('branch')
-    const createdAt = now()
-    const tenant = { slug, name: hospitalName, address, phone, status: 'pending', createdAt: now() }
-    const branch = { id: branchId, tenantId, name: 'Main Branch', address, createdAt }
-    const profile = { id: userRecord.uid, tenantId, branchId, name: ownerName, email, phone, roles: ['facility_admin'], profession: 'Hospital administrator', active: true, createdAt }
-    const tenantDoc = store.collection('tenants').doc(tenantId)
-    const records = [
-      { entity: 'hospitals', recordId: tenantId, payload: { id: tenantId, hospitalId: tenantId, slug, name: hospitalName, address, phone, status: 'pending', createdAt } },
-      { entity: 'branches', recordId: branchId, payload: { id: branchId, hospitalId: tenantId, branchId, name: branch.name, address, isMain: true, createdAt } },
-      { entity: 'staff', recordId: userRecord.uid, payload: { id: userRecord.uid, hospitalId: tenantId, branchId, name: ownerName, email, phone, active: true, profession: profile.profession, createdAt } },
-      { entity: 'staff_roles', recordId: `${userRecord.uid}__facility_admin`, payload: { id: `${userRecord.uid}__facility_admin`, hospitalId: tenantId, staffId: userRecord.uid, role: 'facility_admin' } },
-    ]
-    await store.runTransaction(async (transaction) => {
-      const slugRef = store.collection('tenantSlugs').doc(slug)
-      if ((await transaction.get(slugRef)).exists) throw new Error('HOSPITAL_SLUG_EXISTS')
-      transaction.set(tenantDoc, tenant)
-      transaction.set(tenantDoc.collection('branches').doc(branchId), branch)
-      transaction.set(tenantDoc.collection('staff').doc(userRecord.uid), profile)
-      transaction.set(store.collection('staffProfiles').doc(userRecord.uid), profile)
-      transaction.set(slugRef, { tenantId, createdAt })
-      transaction.set(tenantDoc.collection('subscriptions').doc('current'), { id: `sub_${tenantId}`, tenantId, plan: 'Freemium', amountMinor: 0, status: 'pending', startsAt: createdAt, createdAt, updatedAt: createdAt })
-      let sequence = 0
-      for (const row of records) {
-        sequence += 1
-        transaction.set(tenantDoc.collection('records').doc(`${row.entity}__${row.recordId}`), { ...row, tenantId, deleted: false, updatedAt: createdAt })
-        transaction.set(tenantDoc.collection('syncChanges').doc(String(sequence)), { sequence, entity: row.entity, recordId: row.recordId, operation: 'create', payload: row.payload, createdAt })
-      }
-      transaction.set(tenantDoc.collection('meta').doc('sync'), { lastSequence: sequence, updatedAt: createdAt })
-    })
-    await firebaseAuth.setCustomUserClaims(userRecord.uid, { aud: 'hospital', tenantId, roles: profile.roles })
-    res.status(201).json({ status: 'pending', message: 'Registration received. A Dibia administrator must approve your hospital before you can sign in.', tenant: { id: tenantId, ...tenant }, user: { id: profile.id, name: profile.name, email: profile.email }, branch })
-  } catch (error) {
-    if (userRecord?.uid) await firebaseAuth.deleteUser(userRecord.uid).catch(() => {})
-    if (String(error.message).includes('EMAIL_EXISTS')) return res.status(409).json({ message: 'An account with that email already exists' })
-    return res.status(400).json({ message: production ? 'Could not create hospital account' : error.message || 'Could not create hospital account' })
-  }
-}))
-
-app.post('/auth/login', limitAuthAttempts, (req, res) => {
-  const identifier = String(req.body?.identifier || '').trim()
-  const password = String(req.body?.password || '')
-  if (req.body?.audience === 'platform') {
-    const platformUser = db.prepare('SELECT * FROM platform_users WHERE lower(email) = lower(?)').get(identifier)
-    if (!platformUser || !platformUser.active || !bcrypt.compareSync(password, platformUser.password_hash)) return res.status(401).json({ message: 'Invalid platform login details' })
-    const refreshToken = createPlatformRefreshSession(platformUser.id)
-    setRefreshCookie(res, refreshToken)
-    db.prepare('INSERT INTO platform_audit_logs (id, platform_user_id, action, entity, record_id, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id('platform_audit'), platformUser.id, 'auth.login', 'platform_user', platformUser.id, json({ audience: 'platform' }), now())
-    return res.json({ accessToken: issuePlatformAccess(platformUser), user: { id: platformUser.id, name: platformUser.name, email: platformUser.email, roles: parse(platformUser.roles_json, []) } })
-  }
-  if (firestoreStatus().enabled) {
-    return firebasePasswordSignIn(identifier, password)
-      .then(async (signedIn) => {
-        const { profile, tenant } = await firestoreHospitalSession(signedIn.idToken)
-        setRefreshCookie(res, signedIn.refreshToken)
-        res.json(firebaseSession(profile, tenant, null))
-      })
-      .catch((error) => res.status(error.code === 'HOSPITAL_NOT_ACTIVE' ? 403 : 401).json({
-        ...(error.code === 'HOSPITAL_NOT_ACTIVE' ? { code: error.message.includes('awaiting approval') ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE' } : {}),
-        message: error.code === 'HOSPITAL_NOT_ACTIVE' ? error.message : 'Invalid login details',
-      }))
-  }
-  const staff = findStaff(identifier)
-  if (!staff || !staff.active || !bcrypt.compareSync(password, staff.password_hash)) return res.status(401).json({ message: 'Invalid login details' })
-  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(staff.tenant_id)
-  if (!tenant || tenant.status !== 'active') return res.status(403).json({
-    code: tenant?.status === 'pending' ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE',
-    message: tenant?.status === 'pending' ? 'Hospital registration is awaiting approval' : 'Hospital workspace is not active',
-  })
-  ensureSqliteTenantSnapshot(tenant.id)
-  const branch = staff.branch_id ? db.prepare('SELECT * FROM branches WHERE id = ?').get(staff.branch_id) : null
-  const refreshToken = createRefreshSession(staff.id)
-  setRefreshCookie(res, refreshToken)
-  recordAudit(staff.tenant_id, staff.id, 'auth.login', 'staff', staff.id)
-  res.json({ accessToken: issueAccess(staff), ...publicSession(staff, tenant, branch) })
-})
-
-app.post('/auth/refresh', (req, res) => {
-  const raw = req.cookies.dibia_refresh
-
-  function continueRefreshWithSqlite() {
-    const platformSession = raw ? db.prepare('SELECT * FROM platform_refresh_sessions WHERE token_hash = ? AND expires_at > ?').get(sha256(raw), now()) : null
-    if (platformSession) {
-      const platformUser = db.prepare('SELECT * FROM platform_users WHERE id = ? AND active = 1').get(platformSession.platform_user_id)
-      if (!platformUser) return res.status(401).json({ message: 'Platform account is inactive' })
-      db.prepare('DELETE FROM platform_refresh_sessions WHERE id = ?').run(platformSession.id)
-      setRefreshCookie(res, createPlatformRefreshSession(platformUser.id))
-      return res.json({ accessToken: issuePlatformAccess(platformUser), user: { id: platformUser.id, name: platformUser.name, email: platformUser.email, roles: parse(platformUser.roles_json, []) } })
-    }
-    const session = raw ? db.prepare('SELECT * FROM refresh_sessions WHERE token_hash = ? AND expires_at > ?').get(sha256(raw), now()) : null
-    if (!session) return res.status(401).json({ message: 'Refresh session expired' })
-    const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(session.staff_id)
-    if (!staff || !staff.active) return res.status(401).json({ message: 'Hospital account is inactive' })
-    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(staff.tenant_id)
-    const branch = staff.branch_id ? db.prepare('SELECT * FROM branches WHERE id = ?').get(staff.branch_id) : null
-    db.prepare('DELETE FROM refresh_sessions WHERE id = ?').run(session.id)
-    setRefreshCookie(res, createRefreshSession(staff.id))
-    return res.json({ accessToken: issueAccess(staff), ...publicSession(staff, tenant, branch) })
-  }
-
-  if (raw && firestoreStatus().enabled) {
-    return firebaseRefresh(raw)
-      .then(async (refreshed) => {
-        if (!refreshed?.id_token) return null
-        const { profile, tenant } = await firestoreHospitalSession(refreshed.id_token)
-        setRefreshCookie(res, refreshed.refresh_token || raw)
-        res.json(firebaseSession(profile, tenant, null))
-        return true
-      })
-      .catch(() => null)
-      .then((handled) => {
-        if (!handled && !res.headersSent) continueRefreshWithSqlite()
-      })
-  }
-  return continueRefreshWithSqlite()
-})
-
-app.post('/auth/logout', (req, res) => {
-  const raw = req.cookies.dibia_refresh
-  if (raw) {
-    db.prepare('DELETE FROM refresh_sessions WHERE token_hash = ?').run(sha256(raw))
-    db.prepare('DELETE FROM platform_refresh_sessions WHERE token_hash = ?').run(sha256(raw))
-  }
-  res.clearCookie('dibia_refresh', { httpOnly: true, sameSite: production ? 'strict' : 'lax', secure: production, path: '/' })
-  res.json({ ok: true })
-})
-
-// Dibia Super Admin console sessions use a separate HttpOnly refresh cookie.
-// The short-lived access token stays in the console app's memory.
-app.post('/auth/console/login', limitAuthAttempts, (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase()
-  const password = String(req.body?.password || '')
-  const admin = db.prepare('SELECT * FROM platform_users WHERE lower(email) = ? AND active = 1').get(email)
-  if (!admin || !bcrypt.compareSync(password, admin.password_hash) || !parse(admin.roles_json, []).includes('platform_super_admin')) {
-    return res.status(401).json({ message: 'Invalid Super Admin email or password' })
-  }
-  const refreshToken = createPlatformRefreshSession(admin.id)
-  setConsoleRefreshCookie(res, refreshToken)
-  platformAudit(admin.id, 'auth.login', 'platform_user', admin.id)
-  return res.json({ accessToken: issuePlatformAccess(admin), user: { id: admin.id, name: admin.name, email: admin.email } })
-})
-
-app.get('/auth/console/session', (req, res) => {
-  const raw = req.cookies.dibia_console_refresh
-  const session = raw ? db.prepare('SELECT * FROM platform_refresh_sessions WHERE token_hash = ? AND expires_at > ?').get(sha256(raw), now()) : null
-  const admin = session ? db.prepare('SELECT * FROM platform_users WHERE id = ? AND active = 1').get(session.platform_user_id) : null
-  if (!admin || !parse(admin.roles_json, []).includes('platform_super_admin')) return res.status(401).json({ message: 'Console session expired' })
-  db.prepare('DELETE FROM platform_refresh_sessions WHERE id = ?').run(session.id)
-  setConsoleRefreshCookie(res, createPlatformRefreshSession(admin.id))
-  return res.json({ accessToken: issuePlatformAccess(admin), user: { id: admin.id, name: admin.name, email: admin.email } })
-})
-
-app.post('/auth/console/logout', (req, res) => {
-  const raw = req.cookies.dibia_console_refresh
-  if (raw) db.prepare('DELETE FROM platform_refresh_sessions WHERE token_hash = ?').run(sha256(raw))
-  res.clearCookie('dibia_console_refresh', { httpOnly: true, sameSite: production ? 'strict' : 'lax', secure: production, path: '/' })
-  return res.json({ ok: true })
-})
-
-app.get('/me', auth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const store = getFirestoreStore()
-    const [profileSnapshot, tenantSnapshot] = await Promise.all([
-      store.collection('staffProfiles').doc(req.auth.sub).get(),
-      store.collection('tenants').doc(req.auth.tenantId).get(),
-    ])
-    if (!profileSnapshot.exists || !tenantSnapshot.exists) return res.status(404).json({ message: 'Account not found' })
-    const profile = { id: profileSnapshot.id, ...profileSnapshot.data() }
-    const tenant = { id: tenantSnapshot.id, ...tenantSnapshot.data() }
-    const branchSnapshot = profile.branchId ? await tenantSnapshot.ref.collection('branches').doc(profile.branchId).get() : null
-    const branch = branchSnapshot?.exists ? { id: branchSnapshot.id, ...branchSnapshot.data() } : null
-    return res.json(firebaseSession(profile, tenant, branch))
-  }
-  const staff = db.prepare('SELECT * FROM staff WHERE id = ? AND tenant_id = ?').get(req.auth.sub, req.auth.tenantId)
-  if (!staff) return res.status(404).json({ message: 'Account not found' })
-  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(staff.tenant_id)
-  const branch = staff.branch_id ? db.prepare('SELECT * FROM branches WHERE id = ?').get(staff.branch_id) : null
-  res.json(publicSession(staff, tenant, branch))
-}))
-
-function platformAudit(platformUserId, action, entity, recordId, metadata = {}) {
-  db.prepare('INSERT INTO platform_audit_logs (id, platform_user_id, action, entity, record_id, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id('platform_audit'), platformUserId, action, entity, recordId, json(metadata), now())
+    const header = req.get('authorization') || ''
+    if (!header.startsWith('Bearer ')) return res.status(401).json({ message: 'Authentication required' })
+    const claims = jwt.verify(header.slice(7), JWT_SECRET, { algorithms: ['HS256'] })
+    if (claims.aud !== 'hospital') return res.status(401).json({ message: 'Hospital session required' })
+    const [profileDoc, tenantDoc] = await Promise.all([appAuth(claims.sub).get(), tenantRef(claims.tenantId).get()])
+    if (!profileDoc.exists || !tenantDoc.exists) return res.status(401).json({ message: 'Hospital account is inactive' })
+    const profile = profileDoc.data(), tenant = tenantDoc.data()
+    if (profile.active === false || profile.tenantId !== claims.tenantId) return res.status(401).json({ message: 'Hospital account is inactive' })
+    if (tenant.status !== 'active') return res.status(403).json({ code: tenant.status === 'pending' ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE', message: tenant.status === 'pending' ? 'Hospital registration is awaiting approval' : 'Hospital workspace is not active' })
+    req.auth = { ...claims, roles: profile.roles || [], branchId: profile.branchId || null, permGrants: profile.permGrants || [], permDenies: profile.permDenies || [] }
+    return next()
+  } catch { return res.status(401).json({ message: 'Access token expired or invalid' }) }
 }
-
-async function firestoreTenantSummary(snapshot) {
-  const tenant = { id: snapshot.id, ...snapshot.data() }
-  const tenantRoot = getFirestoreStore().collection('tenants').doc(snapshot.id)
-  const [branches, staff, subscription, moduleDocs] = await Promise.all([
-    tenantRoot.collection('branches').get(),
-    tenantRoot.collection('staff').get(),
-    tenantRoot.collection('subscriptions').doc('current').get(),
-    tenantRoot.collection('tenantModules').where('status', '==', 'enabled').get(),
-  ])
-  const billing = subscription.exists ? subscription.data() : null
-  return {
-    id: tenant.id, slug: tenant.slug, name: tenant.name, logoUrl: tenant.logoUrl || null,
-    location: tenant.address || '', phone: tenant.phone || '', tenantStatus: tenant.status || 'pending',
-    registeredAt: tenant.createdAt || null, branches: branches.size, staff: staff.size,
-    subscriptionStatus: billing?.status || 'pending', plan: billing?.plan || 'Freemium',
-    status: ['past_due', 'failed'].includes(billing?.status) ? 'failed' : tenant.status || 'pending',
-    usageDays: 0, modules: moduleDocs.docs.map((doc) => doc.data().name || doc.id),
-  }
-}
-
-app.get('/platform/summary', platformAuth, asyncRoute(async (_req, res) => {
-  if (firestoreStatus().enabled) {
-    const snapshot = await getFirestoreStore().collection('tenants').get()
-    let activeSubscriptions = 0
-    let activeUsers = 0
-    for (const tenant of snapshot.docs) {
-      const [subscription, staff] = await Promise.all([
-        tenant.ref.collection('subscriptions').doc('current').get(),
-        tenant.ref.collection('staff').where('active', '==', true).get(),
-      ])
-      if (subscription.data()?.status === 'active') activeSubscriptions += 1
-      activeUsers += staff.size
-    }
-    const publishedModules = db.prepare("SELECT COUNT(*) AS count FROM modules WHERE status = 'published'").get().count
-    return res.json({ hospitals: snapshot.size, activeSubscriptions, publishedModules, activeUsers })
-  }
-  const hospitals = db.prepare('SELECT COUNT(*) AS count FROM tenants').get().count
-  const activeSubscriptions = db.prepare("SELECT COUNT(*) AS count FROM subscriptions WHERE status = 'active'").get().count
-  const publishedModules = db.prepare("SELECT COUNT(*) AS count FROM modules WHERE status = 'published'").get().count
-  const activeUsers = db.prepare('SELECT COUNT(*) AS count FROM staff WHERE active = 1').get().count
-  res.json({ hospitals, activeSubscriptions, publishedModules, activeUsers })
-}))
-
-app.get('/platform/audit', platformAuth, (req, res) => {
-  const limit = Math.min(500, Math.max(1, Number(req.query.limit || 200)))
-  const rows = db.prepare('SELECT id, platform_user_id AS platformUserId, action, entity, record_id AS recordId, metadata_json AS metadata, created_at AS createdAt FROM platform_audit_logs ORDER BY created_at DESC LIMIT ?').all(limit).map((row) => ({ ...row, metadata: parse(row.metadata, {}) }))
-  res.json({ audit: rows })
-})
-
-app.get('/platform/settings', platformAuth, (_req, res) => {
-  const row = db.prepare('SELECT value_json FROM platform_settings WHERE id = ?').get('platform')
-  res.json({ settings: { id: 'platform', ...(parse(row?.value_json, {})) } })
-})
-
-app.patch('/platform/settings', platformAuth, (req, res) => {
-  const value = { ...(req.body || {}) }
-  delete value.id
-  db.prepare('INSERT INTO platform_settings (id, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at').run('platform', json(value), now())
-  platformAudit(req.auth.sub, 'platform.settings.updated', 'platform_settings', 'platform')
-  res.json({ settings: { id: 'platform', ...value } })
-})
-
-app.get('/platform/transactions', platformAuth, asyncRoute(async (_req, res) => {
-  if (firestoreStatus().enabled) {
-    const tenants = await getFirestoreStore().collection('tenants').get()
-    const transactions = []
-    for (const tenantDoc of tenants.docs) {
-      const [billingSnapshot, tenantSummary] = await Promise.all([
-        tenantDoc.ref.collection('subscriptions').doc('current').get(),
-        firestoreTenantSummary(tenantDoc),
-      ])
-      if (!billingSnapshot.exists) continue
-      const billing = billingSnapshot.data()
-      transactions.push({
-        id: billing.id || `sub_${tenantDoc.id}`, hospitalId: tenantDoc.id,
-        hospitalName: tenantSummary.name, plan: billing.plan || 'Freemium',
-        amountMinor: Number(billing.amountMinor || 0), amount: Number(billing.amountMinor || 0) / 100,
-        date: billing.renewsAt || billing.updatedAt || billing.createdAt,
-        status: billing.status === 'active' ? 'paid' : billing.status === 'past_due' ? 'failed' : billing.status,
-      })
-    }
-    return res.json({ transactions: transactions.sort((a, b) => String(b.date).localeCompare(String(a.date))) })
-  }
-  const rows = db.prepare(`SELECT s.id, s.tenant_id AS hospitalId, t.name AS hospitalName, p.name AS plan,
-      p.price_minor AS amountMinor, s.renews_at AS date, s.status
-    FROM subscriptions s JOIN tenants t ON t.id = s.tenant_id JOIN subscription_plans p ON p.id = s.plan_id
-    ORDER BY s.updated_at DESC`).all().map((row) => ({ ...row, amount: row.amountMinor / 100, status: row.status === 'active' ? 'paid' : row.status === 'past_due' ? 'failed' : row.status }))
-  res.json({ transactions: rows })
-}))
-
-app.patch('/platform/transactions/:id/confirm', platformAuth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const tenants = await getFirestoreStore().collection('tenants').get()
-    for (const tenant of tenants.docs) {
-      const billingRef = tenant.ref.collection('subscriptions').doc('current')
-      const billing = await billingRef.get()
-      if (billing.exists && (billing.data().id || `sub_${tenant.id}`) === req.params.id) {
-        await billingRef.set({ status: 'active', paymentMethod: 'manual', updatedAt: now(), confirmedBy: req.auth.sub, confirmedAt: now() }, { merge: true })
-        platformAudit(req.auth.sub, 'subscription.payment_confirmed', 'subscription', req.params.id, { tenantId: tenant.id, method: 'manual' })
-        return res.json({ id: req.params.id, hospitalId: tenant.id, status: 'paid' })
-      }
-    }
-    return res.status(404).json({ message: 'Subscription transaction not found' })
-  }
-  const transaction = db.prepare('SELECT id, tenant_id FROM subscriptions WHERE id = ?').get(req.params.id)
-  if (!transaction) return res.status(404).json({ message: 'Subscription transaction not found' })
-  db.prepare("UPDATE subscriptions SET status = 'active', updated_at = ? WHERE id = ?").run(now(), transaction.id)
-  platformAudit(req.auth.sub, 'subscription.payment_confirmed', 'subscription', transaction.id, { tenantId: transaction.tenant_id, method: 'manual' })
-  res.json({ id: transaction.id, hospitalId: transaction.tenant_id, status: 'paid' })
-}))
-
-app.get('/platform/modules', platformAuth, (_req, res) => {
-  const modules = db.prepare('SELECT id, code, name, description, category, version, status, pricing_model AS pricingModel, price_minor AS priceMinor, config_schema_json AS configSchema, created_at AS createdAt, updated_at AS updatedAt FROM modules ORDER BY name').all().map((module) => ({ ...module, configSchema: parse(module.configSchema) }))
-  res.json({ modules })
-})
-
-app.post('/platform/modules', platformAuth, (req, res) => {
-  const code = String(req.body?.code || '').trim().toLowerCase()
-  const name = String(req.body?.name || '').trim()
-  if (!/^[a-z0-9-]+$/.test(code) || !name) return res.status(400).json({ message: 'Module code and name are required' })
-  const timestamp = now()
-  const moduleId = id('module')
+async function verifyPlatform(req, res, next) {
   try {
-    db.prepare('INSERT INTO modules (id, code, name, description, category, version, status, pricing_model, price_minor, config_schema_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(moduleId, code, name, String(req.body?.description || ''), String(req.body?.category || 'operations'), String(req.body?.version || '1.0.0'), 'draft', String(req.body?.pricingModel || 'addon'), Math.max(0, Number(req.body?.priceMinor || 0)), json(req.body?.configSchema || {}), timestamp, timestamp)
-  } catch (error) {
-    if (String(error.message).includes('UNIQUE')) return res.status(409).json({ message: 'A module with that code already exists' })
+    const header = req.get('authorization') || ''
+    if (!header.startsWith('Bearer ')) return res.status(401).json({ message: 'Platform authentication required' })
+    const claims = jwt.verify(header.slice(7), JWT_SECRET, { algorithms: ['HS256'] })
+    if (claims.aud !== 'platform') return res.status(401).json({ message: 'Platform session required' })
+    const user = await platformUserRef(claims.sub).get()
+    if (!user.exists || user.data().active === false || !(user.data().roles || []).includes('platform_super_admin')) return res.status(403).json({ message: 'Platform Super Admin access required' })
+    req.auth = { ...claims, roles: user.data().roles || [] }
+    return next()
+  } catch { return res.status(401).json({ message: 'Platform access token expired or invalid' }) }
+}
+const auth = verifyHospital
+const platformAuth = verifyPlatform
+const requireRole = (...roles) => (req, res, next) => roles.some((role) => req.auth.roles?.includes(role)) ? next() : res.status(403).json({ message: 'You do not have permission for this action' })
+
+async function platformAudit(actorId, action, entity, recordId, metadata = {}) {
+  const auditId = id('platform_audit')
+  await db().collection('platformAuditLogs').doc(auditId).set({ id: auditId, platformUserId: actorId, action, entity, recordId, metadata, createdAt: now() })
+}
+async function recordAudit(tenantId, actorId, action, entity = null, recordId = null, metadata = {}) {
+  const auditId = id('audit')
+  await tenantRef(tenantId).collection('auditLogs').doc(auditId).set({ id: auditId, tenantId, actorId, action, entity, recordId, metadata, createdAt: now() })
+}
+async function firebasePasswordSignIn(email, password) {
+  const key = encodeURIComponent(String(process.env.FIREBASE_WEB_API_KEY || ''))
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, returnSecureToken: true }) })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const errorCode = data.error?.message || ''
+    const error = new Error(errorCode === 'CONFIGURATION_NOT_FOUND'
+      ? 'Firebase Authentication is not initialized for this project. Enable Authentication and Email/Password sign-in in Firebase Console.'
+      : 'Invalid login details')
+    if (errorCode === 'CONFIGURATION_NOT_FOUND') error.code = 'auth/configuration-not-found'
     throw error
   }
-  platformAudit(req.auth.sub, 'module.created', 'module', moduleId, { code })
-  res.status(201).json({ id: moduleId, code, name, status: 'draft' })
-})
-
-app.get('/platform/tenants', platformAuth, asyncRoute(async (_req, res) => {
-  if (firestoreStatus().enabled) {
-    const snapshot = await getFirestoreStore().collection('tenants').get()
-    const tenants = await Promise.all(snapshot.docs.map(firestoreTenantSummary))
-    return res.json({ tenants: tenants.sort((a, b) => String(a.name).localeCompare(String(b.name))) })
-  }
-  const rows = db.prepare(`SELECT t.id, t.slug, t.name, t.logo_url AS logoUrl, t.address AS location, t.phone,
-      t.status AS tenantStatus, t.created_at AS registeredAt,
-      (SELECT COUNT(*) FROM branches b WHERE b.tenant_id = t.id) AS branches,
-      (SELECT COUNT(*) FROM staff u WHERE u.tenant_id = t.id) AS staff,
-      (SELECT s.status FROM subscriptions s WHERE s.tenant_id = t.id ORDER BY s.created_at DESC LIMIT 1) AS subscriptionStatus,
-      (SELECT p.name FROM subscriptions s JOIN subscription_plans p ON p.id = s.plan_id WHERE s.tenant_id = t.id ORDER BY s.created_at DESC LIMIT 1) AS plan
-    FROM tenants t ORDER BY t.name`).all()
-  const tenants = rows.map((tenant) => ({
-    ...tenant,
-    status: ['past_due', 'failed'].includes(tenant.subscriptionStatus) ? 'failed' : tenant.tenantStatus,
-    plan: tenant.plan || 'Freemium',
-    usageDays: 0,
-    modules: db.prepare(`SELECT m.name FROM tenant_modules tm JOIN modules m ON m.id = tm.module_id WHERE tm.tenant_id = ? AND tm.status = 'enabled' ORDER BY m.name`).all(tenant.id).map((row) => row.name),
-  }))
-  res.json({ tenants })
-}))
-
-app.post('/platform/tenants/:tenantId/decision', platformAuth, asyncRoute(async (req, res) => {
-  const decision = String(req.body?.decision || '')
-  if (!['approve', 'reject'].includes(decision)) return res.status(400).json({ message: 'Decision must be approve or reject' })
-  const nextStatus = decision === 'approve' ? 'active' : 'rejected'
-  const timestamp = now()
-  if (firestoreStatus().enabled) {
-    const tenantRef = getFirestoreStore().collection('tenants').doc(req.params.tenantId)
-    const tenantSnapshot = await tenantRef.get()
-    if (!tenantSnapshot.exists) return res.status(404).json({ message: 'Hospital tenant not found' })
-    const before = tenantSnapshot.data()
-    if (before.status !== 'pending') return res.status(409).json({ message: `Only pending registrations can be ${decision === 'approve' ? 'approved' : 'rejected'}` })
-    await getFirestoreStore().runTransaction(async (transaction) => {
-      transaction.set(tenantRef, { status: nextStatus, updatedAt: timestamp, ...(decision === 'approve' ? { approvedAt: timestamp, approvedBy: req.auth.sub } : { rejectedAt: timestamp, rejectedBy: req.auth.sub }) }, { merge: true })
-      if (decision === 'approve') {
-        const subscriptionRef = tenantRef.collection('subscriptions').doc('current')
-        transaction.set(subscriptionRef, { status: 'pending', startsAt: timestamp, updatedAt: timestamp }, { merge: true })
-      }
-    })
-    platformAudit(req.auth.sub, `tenant.${decision}d`, 'tenant', tenantSnapshot.id, { before: { status: before.status }, after: { status: nextStatus } })
-    return res.json({ tenant: { id: tenantSnapshot.id, ...before, status: nextStatus, updatedAt: timestamp } })
-  }
-  const tenant = db.prepare('SELECT id, slug, name, status FROM tenants WHERE id = ?').get(req.params.tenantId)
-  if (!tenant) return res.status(404).json({ message: 'Hospital tenant not found' })
-  if (tenant.status !== 'pending') return res.status(409).json({ message: `Only pending registrations can be ${decision === 'approve' ? 'approved' : 'rejected'}` })
-  const applyDecision = db.transaction(() => {
-    db.prepare('UPDATE tenants SET status = ? WHERE id = ? AND status = \'pending\'').run(nextStatus, tenant.id)
-    if (decision === 'approve') {
-      const plan = db.prepare("SELECT id FROM subscription_plans WHERE code = 'freemium'").get()
-      if (plan) {
-        const current = db.prepare('SELECT id FROM subscriptions WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1').get(tenant.id)
-        if (current) db.prepare('UPDATE subscriptions SET status = ?, starts_at = ?, updated_at = ? WHERE id = ?').run('pending', timestamp, timestamp, current.id)
-        else db.prepare('INSERT INTO subscriptions (id, tenant_id, plan_id, status, starts_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id('sub'), tenant.id, plan.id, 'pending', timestamp, timestamp, timestamp)
-      }
-    }
-  })
-  applyDecision()
-  platformAudit(req.auth.sub, `tenant.${decision}d`, 'tenant', tenant.id, { before: { status: tenant.status }, after: { status: nextStatus } })
-  return res.json({ tenant: { ...tenant, status: nextStatus, updatedAt: timestamp } })
-}))
-
-app.patch('/platform/tenants/:tenantId', platformAuth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const tenantRef = getFirestoreStore().collection('tenants').doc(req.params.tenantId)
-    const tenantSnapshot = await tenantRef.get()
-    if (!tenantSnapshot.exists) return res.status(404).json({ message: 'Hospital tenant not found' })
-    const tenant = { id: tenantSnapshot.id, ...tenantSnapshot.data() }
-    const allowedStatuses = new Set(['pending', 'active', 'suspended', 'rejected'])
-    const status = req.body?.status == null ? tenant.status : String(req.body.status)
-    if (!allowedStatuses.has(status)) return res.status(400).json({ message: 'Invalid tenant status' })
-    if (status !== tenant.status && (tenant.status === 'pending' || status === 'rejected')) return res.status(409).json({ message: 'Use the registration decision action for pending hospitals' })
-    const updates = { status, updatedAt: now() }
-    if (req.body?.name != null) updates.name = String(req.body.name).trim()
-    if (req.body?.location != null) updates.address = String(req.body.location).trim()
-    if (req.body?.phone != null) updates.phone = String(req.body.phone).trim()
-    let billingUpdate = null
-    if (req.body?.plan != null) {
-      const plan = db.prepare('SELECT code, name, price_minor FROM subscription_plans WHERE lower(name) = lower(?) OR lower(code) = lower(?)').get(String(req.body.plan), String(req.body.plan))
-      if (!plan) return res.status(400).json({ message: 'Unknown subscription plan' })
-      const billingRef = tenantRef.collection('subscriptions').doc('current')
-      const current = await billingRef.get()
-      billingUpdate = { id: current.data()?.id || `sub_${tenant.id}`, tenantId: tenant.id, plan: plan.name, planCode: plan.code, amountMinor: plan.price_minor, status: current.data()?.status || 'pending', updatedAt: now(), ...(current.exists ? {} : { createdAt: now(), startsAt: now() }) }
-      await billingRef.set(billingUpdate, { merge: true })
-    }
-    await tenantRef.set(updates, { merge: true })
-    platformAudit(req.auth.sub, `tenant.${status}`, 'tenant', tenant.id, { before: { status: tenant.status }, after: { status } })
-    return res.json({ tenant: { ...tenant, ...updates, ...(billingUpdate ? { plan: billingUpdate.plan } : {}) } })
-  }
-  const tenant = db.prepare('SELECT id, slug, name, status FROM tenants WHERE id = ?').get(req.params.tenantId)
-  if (!tenant) return res.status(404).json({ message: 'Hospital tenant not found' })
-  const allowedStatuses = new Set(['pending', 'active', 'suspended', 'rejected'])
-  const status = req.body?.status == null ? tenant.status : String(req.body.status)
-  if (!allowedStatuses.has(status)) return res.status(400).json({ message: 'Invalid tenant status' })
-  if (status !== tenant.status && (tenant.status === 'pending' || status === 'rejected')) return res.status(409).json({ message: 'Use the registration decision action for pending hospitals' })
-  db.prepare('UPDATE tenants SET status = ?, name = COALESCE(?, name), address = COALESCE(?, address), phone = COALESCE(?, phone) WHERE id = ?').run(status, req.body?.name == null ? null : String(req.body.name), req.body?.location == null ? null : String(req.body.location), req.body?.phone == null ? null : String(req.body.phone), tenant.id)
-  if (req.body?.plan != null) {
-    const plan = db.prepare('SELECT id FROM subscription_plans WHERE lower(name) = lower(?) OR lower(code) = lower(?)').get(String(req.body.plan), String(req.body.plan))
-    if (!plan) return res.status(400).json({ message: 'Unknown subscription plan' })
-    const current = db.prepare('SELECT id FROM subscriptions WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1').get(tenant.id)
-    if (current) db.prepare('UPDATE subscriptions SET plan_id = ?, updated_at = ? WHERE id = ?').run(plan.id, now(), current.id)
-    else db.prepare('INSERT INTO subscriptions (id, tenant_id, plan_id, status, starts_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id('sub'), tenant.id, plan.id, 'active', now(), now(), now())
-  }
-  platformAudit(req.auth.sub, `tenant.${status}`, 'tenant', tenant.id, { before: { status: tenant.status }, after: { status } })
-  res.json({ tenant: { ...tenant, status } })
-}))
-
-app.get('/platform/tenants/:tenantId/users', platformAuth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const tenantSnapshot = await getFirestoreStore().collection('tenants').doc(req.params.tenantId).get()
-    if (!tenantSnapshot.exists) return res.status(404).json({ message: 'Hospital tenant not found' })
-    const tenant = { id: tenantSnapshot.id, ...tenantSnapshot.data() }
-    const snapshot = await tenantSnapshot.ref.collection('staff').get()
-    return res.json({ users: snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data(), hospitalId: tenant.id, hospitalName: tenant.name })) })
-  }
-  const tenant = db.prepare('SELECT id, name FROM tenants WHERE id = ?').get(req.params.tenantId)
-  if (!tenant) return res.status(404).json({ message: 'Hospital tenant not found' })
-  const users = db.prepare('SELECT id, name, email, profession, roles_json AS roles, active, created_at AS createdAt FROM staff WHERE tenant_id = ? ORDER BY name').all(tenant.id).map((user) => ({
-    ...user, roles: parse(user.roles, []), hospitalId: tenant.id, hospitalName: tenant.name,
-  }))
-  res.json({ users })
-}))
-
-app.post('/platform/tenants/:tenantId/users', platformAuth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const tenantRef = getFirestoreStore().collection('tenants').doc(req.params.tenantId)
-    const tenantSnapshot = await tenantRef.get()
-    if (!tenantSnapshot.exists) return res.status(404).json({ message: 'Hospital tenant not found' })
-    const tenant = { id: tenantSnapshot.id, ...tenantSnapshot.data() }
-    const name = String(req.body?.name || '').trim()
-    const email = String(req.body?.email || '').trim().toLowerCase()
-    const password = String(req.body?.password || '')
-    const role = String(req.body?.role || 'facility_admin').trim()
-    const allowedRoles = new Set(['super_admin', 'facility_admin', 'ceo_owner', 'branch_manager', 'pharmacist', 'superintendent_pharmacist', 'receptionist', 'cashier', 'dispenser', 'pharmacy_cashier', 'inventory_officer', 'sales_staff', 'accountant', 'warehouse_officer', 'doctor', 'nurse', 'laboratory_technician'])
-    if (!name || !email || password.length < minPasswordLength || !allowedRoles.has(role)) return res.status(400).json({ message: 'Name, valid email, supported role, and a sufficiently long password are required' })
-    let userRecord
-    try {
-      const branches = await tenantRef.collection('branches').get()
-      const branchId = req.body?.branchId || branches.docs[0]?.id || null
-      if (req.body?.branchId && !branches.docs.some((doc) => doc.id === req.body.branchId)) return res.status(400).json({ message: 'Branch does not belong to this hospital' })
-      userRecord = await getFirebaseAuth().createUser({ email, password, displayName: name })
-      const timestamp = now()
-      const profile = { id: userRecord.uid, tenantId: tenant.id, branchId, name, email, phone: String(req.body?.phone || ''), roles: [role], profession: role, active: true, createdAt: timestamp }
-      const roleId = `${userRecord.uid}__${role}`
-      await getFirestoreStore().runTransaction(async (transaction) => {
-        const seqRef = tenantRef.collection('meta').doc('sync')
-        const seqSnap = await transaction.get(seqRef)
-        let sequence = Number(seqSnap.data()?.lastSequence || 0)
-        const items = [
-          { entity: 'staff', recordId: userRecord.uid, payload: { ...profile, hospitalId: tenant.id } },
-          { entity: 'staff_roles', recordId: roleId, payload: { id: roleId, hospitalId: tenant.id, staffId: userRecord.uid, role } },
-        ]
-        for (const item of items) {
-          sequence += 1
-          transaction.set(tenantRef.collection('records').doc(`${item.entity}__${item.recordId}`), { ...item, tenantId: tenant.id, deleted: false, updatedAt: timestamp })
-          transaction.set(tenantRef.collection('syncChanges').doc(String(sequence)), { sequence, entity: item.entity, recordId: item.recordId, operation: 'create', payload: item.payload, createdAt: timestamp })
-        }
-        transaction.set(seqRef, { lastSequence: sequence, updatedAt: timestamp }, { merge: true })
-        transaction.set(tenantRef.collection('staff').doc(userRecord.uid), profile)
-        transaction.set(getFirestoreStore().collection('staffProfiles').doc(userRecord.uid), profile)
-      })
-      await getFirebaseAuth().setCustomUserClaims(userRecord.uid, { aud: 'hospital', tenantId: tenant.id, roles: [role] })
-      platformAudit(req.auth.sub, 'hospital.user.created', 'staff', userRecord.uid, { tenantId: tenant.id, role })
-      return res.status(201).json({ user: { ...profile, hospitalId: tenant.id, hospitalName: tenant.name } })
-    } catch (error) {
-      if (userRecord?.uid) await getFirebaseAuth().deleteUser(userRecord.uid).catch(() => {})
-      if (String(error.message).includes('EMAIL_EXISTS')) return res.status(409).json({ message: 'An account with that email already exists' })
-      return res.status(400).json({ message: production ? 'Could not create hospital account' : error.message || 'Could not create hospital account' })
-    }
-  }
-  const tenant = db.prepare('SELECT id, name, slug FROM tenants WHERE id = ?').get(req.params.tenantId)
-  if (!tenant) return res.status(404).json({ message: 'Hospital tenant not found' })
-  const name = String(req.body?.name || '').trim()
-  const email = String(req.body?.email || '').trim().toLowerCase()
-  const password = String(req.body?.password || '')
-  const role = String(req.body?.role || 'facility_admin').trim()
-  if (!name || !email || password.length < minPasswordLength) return res.status(400).json({ message: `Name, email, and a ${minPasswordLength}-character password are required` })
-  const roles = [role]
-  const timestamp = now()
-  try {
-    const staffId = id('staff')
-    db.prepare('INSERT INTO staff (id, tenant_id, branch_id, name, email, phone, profession, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-      staffId, tenant.id, null, name, email, String(req.body?.phone || ''), role, bcrypt.hashSync(password, 12), json(roles), timestamp, timestamp,
-    )
-    platformAudit(req.auth.sub, 'hospital.user.created', 'staff', staffId, { tenantId: tenant.id, role })
-    return res.status(201).json({ user: { id: staffId, name, email, roles, active: true, hospitalId: tenant.id, hospitalName: tenant.name, createdAt: timestamp } })
-  } catch (error) {
-    if (String(error.message).includes('UNIQUE')) return res.status(409).json({ message: 'An account with that email already exists' })
-    return res.status(400).json({ message: production ? 'Could not create hospital account' : error.message || 'Could not create hospital account' })
-  }
-}))
-
-function tenantModuleRows(tenantId) {
-  return db.prepare(`SELECT m.id, m.code, m.name, m.description, m.category, m.version, m.status AS publicationStatus,
-      CASE WHEN e.source = 'manual-payment-or-pro-override' THEN COALESCE(e.status, 'unentitled') ELSE 'unentitled' END AS entitlementStatus,
-      CASE WHEN e.source = 'manual-payment-or-pro-override' THEN COALESCE(tm.status, 'disabled') ELSE 'disabled' END AS activationStatus,
-      m.price_minor AS priceMinor
-    FROM modules m
-    LEFT JOIN module_entitlements e ON e.module_id = m.id AND e.tenant_id = ?
-    LEFT JOIN tenant_modules tm ON tm.module_id = m.id AND tm.tenant_id = ?
-    ORDER BY m.name`).all(tenantId, tenantId)
+  return data
+}
+async function firebaseRefresh(token) {
+  const key = encodeURIComponent(String(process.env.FIREBASE_WEB_API_KEY || ''))
+  const response = await fetch(`https://securetoken.googleapis.com/v1/token?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: token }) })
+  const data = await response.json().catch(() => ({}))
+  return response.ok ? data : null
+}
+async function hospitalProfile(idToken) {
+  const decoded = await authAdmin().verifyIdToken(idToken)
+  const profileDoc = await appAuth(decoded.uid).get()
+  if (!profileDoc.exists) throw new Error('Hospital account profile not found')
+  const profile = { id: decoded.uid, ...profileDoc.data() }
+  if (profile.active === false) throw new Error('This account is deactivated')
+  const tenantDoc = await tenantRef(profile.tenantId).get()
+  if (!tenantDoc.exists) throw new Error('Hospital tenant not found')
+  const tenant = { id: tenantDoc.id, ...tenantDoc.data() }
+  if (tenant.status !== 'active') { const error = new Error(tenant.status === 'pending' ? 'Your hospital registration is awaiting approval' : 'This hospital workspace is not active'); error.code = 'HOSPITAL_NOT_ACTIVE'; throw error }
+  const branchDoc = profile.branchId ? await tenantRef(profile.tenantId).collection('branches').doc(profile.branchId).get() : null
+  return { profile, tenant, branch: branchDoc?.exists ? { id: branchDoc.id, ...branchDoc.data() } : null }
 }
 
-async function firestoreTenantModuleRows(tenantId) {
-  const tenantRef = getFirestoreStore().collection('tenants').doc(tenantId)
-  const [entitlements, activations] = await Promise.all([
-    tenantRef.collection('moduleEntitlements').get(),
-    tenantRef.collection('tenantModules').get(),
+const moduleSeed = [
+  ['reception','Reception','Patient registration and identity capture','operations','included',0],['queue','Queue','Care routing and visit flow','operations','included',0],['cashier','Cashier','Patient billing and payment collection','finance','included',0],['inventory','Inventory','Hospital stock and supplies','operations','subscription',1500000],['reports','Reports','Hospital operational reports','administration','included',0],['patient-management','Patient Management','Central patient registry, identity and visit history','core','included',0],['appointments','Appointments','Scheduling, follow-ups and reminders','operations','included',0],['emr','Electronic Medical Records','Clinical encounters, diagnoses and medical notes','clinical','subscription',2500000],['laboratory','Laboratory Management','Requests, samples, results and verification','clinical','subscription',1800000],['pharmacy','Pharmacy Management','Prescriptions, dispensing and medicine stock','clinical','subscription',1800000],['billing','Billing & Accounts','Invoices, payments, receipts and insurance','finance','subscription',1500000],['inpatient','Inpatient Management','Admissions, wards, beds and discharge','clinical','subscription',2200000],['radiology','Radiology & Imaging','Imaging requests, worklists and reports','clinical','addon',2000000],['hr','HR & Payroll','Staff, attendance, leave and payroll','administration','addon',1200000],['analytics','Advanced Analytics','Cross-department operational insights','administration','addon',1400000],['telemedicine','Telemedicine','Remote consultations and secure sessions','clinical','addon',1600000],
+]
+const planSeed = [['professional','Professional',9500000],['freemium','Freemium',0],['small','Small',2500000],['medium','Medium',15000000],['large','Large',60000000]]
+async function seedPlatform() {
+  const batch = db().batch(), timestamp = now()
+  for (const [code,name,description,category,pricingModel,priceMinor] of moduleSeed) {
+    const ref = db().collection('modules').doc(code)
+    batch.set(ref, { id: `mod_${code}`, code, name, description, category, version: '1.0.0', status: 'published', pricingModel, priceMinor, configSchema: {}, createdAt: timestamp, updatedAt: timestamp }, { merge: true })
+  }
+  for (const [code,name,priceMinor] of planSeed) batch.set(db().collection('subscriptionPlans').doc(code), { id: `plan_${code}`, code, name, priceMinor, currency: 'NGN', status: 'active', updatedAt: timestamp }, { merge: true })
+  await batch.commit()
+  const email = String(process.env.CONSOLE_ADMIN_EMAIL || '').trim().toLowerCase(), password = String(process.env.CONSOLE_ADMIN_PASSWORD || '')
+  if (email && password.length >= 12) {
+    try {
+      let user
+      try { user = await authAdmin().getUserByEmail(email) } catch (error) {
+        if (error.code !== 'auth/user-not-found') throw error
+        try { user = await authAdmin().createUser({ email, password, displayName: 'Dibia Platform Super Admin' }) } catch (createError) {
+          if (createError.code !== 'auth/email-already-exists') throw createError
+          user = await authAdmin().getUserByEmail(email)
+        }
+      }
+      await platformUserRef(user.uid).set({ id: user.uid, name: user.displayName || 'Dibia Platform Super Admin', email, roles: ['platform_super_admin'], active: true, updatedAt: timestamp }, { merge: true })
+      await authAdmin().setCustomUserClaims(user.uid, { appAudience: 'platform', roles: ['platform_super_admin'] })
+    } catch (error) {
+      console.error('Platform admin bootstrap failed', error.code || error.name)
+      if (production) throw error
+    }
+  }
+}
+
+app.get('/health', (_req,res) => res.json({ ok:true, service:'dibia-hms-backend', time:now(), dataStore:'firestore', firestore:firestoreStatus() }))
+app.get('/health/ready', asyncRoute(async (_req, res) => {
+  const [firestoreCheck, authCheck, platformAdminCheck] = await Promise.allSettled([
+    db().collection('_health').doc('probe').get(),
+    authAdmin().projectConfigManager().getProjectConfig(),
+    (async () => {
+      const admin = await authAdmin().getUserByEmail(String(process.env.CONSOLE_ADMIN_EMAIL || '').trim().toLowerCase())
+      const profile = await platformUserRef(admin.uid).get()
+      return profile.exists && profile.data().active !== false && profile.data().roles?.includes('platform_super_admin')
+    })(),
   ])
-  const entitledByCode = new Map(entitlements.docs.map((doc) => [doc.id, doc.data()]))
-  const activeByCode = new Map(activations.docs.map((doc) => [doc.id, doc.data()]))
-  return db.prepare(`SELECT id, code, name, description, category, version, status AS publicationStatus, price_minor AS priceMinor
-    FROM modules ORDER BY name`).all().map((module) => ({
-    ...module,
-    entitlementStatus: entitledByCode.get(module.code)?.source === 'manual-payment-or-pro-override' ? entitledByCode.get(module.code)?.status || 'unentitled' : 'unentitled',
-    activationStatus: entitledByCode.get(module.code)?.source === 'manual-payment-or-pro-override' ? activeByCode.get(module.code)?.status || 'disabled' : 'disabled',
-    priceMinor: Number(module.priceMinor || 0),
-  }))
+  const checks = {
+    firestore: firestoreCheck.status === 'fulfilled',
+    firebaseAuthConfigured: authCheck.status === 'fulfilled',
+    platformAdmin: platformAdminCheck.status === 'fulfilled' && platformAdminCheck.value === true,
+  }
+  const ready = Object.values(checks).every(Boolean)
+  res.status(ready ? 200 : 503).json({ ok: ready, service: 'dibia-hms-backend', checks, projectId: firestoreStatus().projectId })
+}))
+app.post('/auth/register', limitAuthAttempts, asyncRoute(async (req,res) => {
+  const hospitalName=String(req.body?.hospitalName||'').trim(), ownerName=String(req.body?.ownerName||'').trim(), email=String(req.body?.email||'').trim().toLowerCase(), password=String(req.body?.password||''), phone=String(req.body?.phone||'').trim(), address=String(req.body?.address||'').trim()
+  if(!hospitalName||!ownerName||!email||password.length<minPasswordLength)return res.status(400).json({message:`Hospital name, owner name, email, and a ${minPasswordLength}-character password are required`})
+  let user
+  try {
+    user=await authAdmin().createUser({email,password,displayName:ownerName,phoneNumber:/^\+[1-9]\d{7,14}$/.test(phone)?phone:undefined})
+    const tenantId=id('tenant'), base=hospitalName.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40)||`hospital-${tenantId.slice(-6)}`
+    let slug=base, n=2
+    while((await db().collection('tenantSlugs').doc(slug).get()).exists) slug=`${base}-${n++}`.slice(0,50)
+    const branchId=id('branch'), timestamp=now(), tenant={slug,name:hospitalName,address,phone,status:'pending',createdAt:timestamp}, branch={id:branchId,tenantId,name:'Main Branch',address,createdAt:timestamp}, profile={id:user.uid,tenantId,branchId,name:ownerName,email,phone,roles:['facility_admin'],profession:'Hospital administrator',active:true,createdAt:timestamp}
+    const tRef=tenantRef(tenantId), records=[['hospitals',tenantId,{id:tenantId,hospitalId:tenantId,slug,name:hospitalName,address,phone,status:'pending',createdAt:timestamp}],['branches',branchId,{id:branchId,hospitalId:tenantId,branchId,name:'Main Branch',address,isMain:true,createdAt:timestamp}],['staff',user.uid,{id:user.uid,hospitalId:tenantId,branchId,name:ownerName,email,phone,active:true,profession:profile.profession,createdAt:timestamp}],['staff_roles',`${user.uid}__facility_admin`,{id:`${user.uid}__facility_admin`,hospitalId:tenantId,staffId:user.uid,role:'facility_admin'}]]
+    const batch=db().batch(); batch.create(tRef,tenant); batch.create(db().collection('tenantSlugs').doc(slug),{tenantId,createdAt:timestamp}); batch.set(tRef.collection('branches').doc(branchId),branch); batch.set(tRef.collection('staff').doc(user.uid),profile); batch.set(appAuth(user.uid),profile); batch.set(tRef.collection('subscriptions').doc('current'),{id:`sub_${tenantId}`,tenantId,plan:'Freemium',amountMinor:0,status:'pending',startsAt:timestamp,createdAt:timestamp,updatedAt:timestamp})
+    records.forEach(([entity,recordId,payload],i)=>{batch.set(tRef.collection('records').doc(`${entity}__${recordId}`),{tenantId,entity,recordId,payload,deleted:false,updatedAt:timestamp});batch.set(tRef.collection('syncChanges').doc(String(i+1)),{sequence:i+1,entity,recordId,operation:'create',payload,createdAt:timestamp})})
+    batch.set(tRef.collection('meta').doc('sync'),{lastSequence:records.length,updatedAt:timestamp}); await authAdmin().setCustomUserClaims(user.uid,{appAudience:'hospital',tenantId,roles:profile.roles}); await batch.commit()
+    return res.status(201).json({status:'pending',message:'Registration received. A Dibia administrator must approve your hospital before you can sign in.',tenant:{id:tenantId,...tenant},user:{id:user.uid,name:ownerName,email},branch})
+  } catch(error) { if(user?.uid)await authAdmin().deleteUser(user.uid).catch(()=>{}); if(error.code==='auth/email-already-exists')return res.status(409).json({message:'An account with that email already exists'}); if(error.code==='auth/configuration-not-found')return apiError(res,error.message,503); return res.status(400).json({message:production?'Could not create hospital account':error.message}) }
+}))
+app.post('/auth/login',limitAuthAttempts,asyncRoute(async(req,res)=>{
+  let identifier=String(req.body?.identifier||'').trim(), password=String(req.body?.password||'')
+  if(!identifier.includes('@')){const matches=await db().collection('staffProfiles').where('phone','==',identifier).limit(1).get();if(matches.empty)return apiError(res,'Invalid login details',401);identifier=matches.docs[0].data().email||''}
+  if(req.body?.audience==='platform') { const signed=await firebasePasswordSignIn(identifier,password); const decoded=await authAdmin().verifyIdToken(signed.idToken); const user=await platformUserRef(decoded.uid).get(); if(!user.exists||user.data().active===false)return apiError(res,'Invalid platform login details',401); const claims={sub:decoded.uid,roles:user.data().roles||[],aud:'platform'}; await saveRefreshSession(signed.refreshToken,decoded.uid,'platform'); setCookie(res,'dibia_refresh',signed.refreshToken); await platformAudit(decoded.uid,'auth.login','platform_user',decoded.uid,{audience:'platform'}); return res.json({accessToken:accessToken(claims),user:{id:decoded.uid,name:user.data().name,email:user.data().email,roles:claims.roles}}) }
+  try { const signed=await firebasePasswordSignIn(identifier,password), {profile,tenant,branch}=await hospitalProfile(signed.idToken); await saveRefreshSession(signed.refreshToken,profile.id,'hospital'); setCookie(res,'dibia_refresh',signed.refreshToken); return res.json(session(profile,tenant,branch)) } catch(error) { if(error.code==='auth/configuration-not-found')return apiError(res,error.message,503); return res.status(error.code==='HOSPITAL_NOT_ACTIVE'?403:401).json({...(error.code==='HOSPITAL_NOT_ACTIVE'?{code:error.message.includes('awaiting approval')?'REGISTRATION_PENDING':'HOSPITAL_INACTIVE'}:{}),message:error.code==='HOSPITAL_NOT_ACTIVE'?error.message:'Invalid login details'}) }
+}))
+app.post('/auth/refresh',asyncRoute(async(req,res)=>{const token=req.cookies.dibia_refresh;if(!token)return apiError(res,'Refresh session expired',401);const sessions=db().collection('refreshSessions'),sessionRef=sessions.doc(sha256(token)),prior=await sessionRef.get();if(!prior.exists||Date.parse(prior.data().expiresAt)<=Date.now())return apiError(res,'Refresh session expired',401);const refreshed=await firebaseRefresh(token);if(!refreshed)return apiError(res,'Refresh session expired',401);const decoded=await authAdmin().verifyIdToken(refreshed.id_token).catch(()=>null);if(!decoded||decoded.uid!==prior.data().uid)return apiError(res,'Refresh session expired',401);await sessionRef.delete();await saveRefreshSession(refreshed.refresh_token,decoded.uid,prior.data().audience);setCookie(res,'dibia_refresh',refreshed.refresh_token);if(prior.data().audience==='platform'){const user=await platformUserRef(decoded.uid).get();if(!user.exists||user.data().active===false)return apiError(res,'Refresh session expired',401);return res.json({accessToken:accessToken({sub:decoded.uid,roles:user.data().roles||[],aud:'platform'}),user:{id:decoded.uid,name:user.data().name,email:user.data().email,roles:user.data().roles||[]}})}const {profile,tenant,branch}=await hospitalProfile(refreshed.id_token);return res.json(session(profile,tenant,branch))}))
+app.post('/auth/logout',asyncRoute(async(req,res)=>{const token=req.cookies.dibia_refresh;if(token)await db().collection('refreshSessions').doc(sha256(token)).delete();clearCookie(res,'dibia_refresh');res.json({ok:true})}))
+app.post('/auth/console/login',limitAuthAttempts,asyncRoute(async(req,res)=>{const signed=await firebasePasswordSignIn(String(req.body?.email||'').trim().toLowerCase(),String(req.body?.password||''));const decoded=await authAdmin().verifyIdToken(signed.idToken);const user=await platformUserRef(decoded.uid).get();if(!user.exists||!(user.data().roles||[]).includes('platform_super_admin'))return apiError(res,'Invalid Super Admin email or password',401);await saveRefreshSession(signed.refreshToken,decoded.uid,'platform');setCookie(res,'dibia_console_refresh',signed.refreshToken);await platformAudit(decoded.uid,'auth.login','platform_user',decoded.uid);return res.json({accessToken:accessToken({sub:decoded.uid,roles:user.data().roles,aud:'platform'}),user:{id:decoded.uid,name:user.data().name,email:user.data().email}})}))
+app.get('/auth/console/session',asyncRoute(async(req,res)=>{const token=req.cookies.dibia_console_refresh||'',ref=db().collection('refreshSessions').doc(sha256(token)),saved=token?await ref.get():null;if(!saved?.exists||saved.data().audience!=='platform'||Date.parse(saved.data().expiresAt)<=Date.now())return apiError(res,'Console session expired',401);const refreshed=await firebaseRefresh(token);if(!refreshed)return apiError(res,'Console session expired',401);const decoded=await authAdmin().verifyIdToken(refreshed.id_token),user=await platformUserRef(decoded.uid).get();if(decoded.uid!==saved.data().uid||!user.exists||!(user.data().roles||[]).includes('platform_super_admin'))return apiError(res,'Console session expired',401);await ref.delete();await saveRefreshSession(refreshed.refresh_token,decoded.uid,'platform');setCookie(res,'dibia_console_refresh',refreshed.refresh_token);return res.json({accessToken:accessToken({sub:decoded.uid,roles:user.data().roles,aud:'platform'}),user:{id:decoded.uid,name:user.data().name,email:user.data().email}})}))
+app.post('/auth/console/logout',asyncRoute(async(req,res)=>{const token=req.cookies.dibia_console_refresh;if(token)await db().collection('refreshSessions').doc(sha256(token)).delete();clearCookie(res,'dibia_console_refresh');res.json({ok:true})}))
+app.get('/me',auth,asyncRoute(async(req,res)=>{const {profile,tenant,branch}=await hospitalProfileFromUid(req.auth.sub);return res.json(session(profile,tenant,branch))}))
+async function hospitalProfileFromUid(uid){const p=await appAuth(uid).get();if(!p.exists)throw new Error('Account not found');const profile={id:p.id,...p.data()},t=await tenantRef(profile.tenantId).get();if(!t.exists)throw new Error('Hospital not found');const b=profile.branchId?await tenantRef(profile.tenantId).collection('branches').doc(profile.branchId).get():null;return{profile,tenant:{id:t.id,...t.data()},branch:b?.exists?{id:b.id,...b.data()}:null}}
+
+async function tenantSummary(doc){const t={id:doc.id,...doc.data()},r=tenantRef(doc.id);const [branches,staff,sub,mods]=await Promise.all([r.collection('branches').get(),r.collection('staff').get(),r.collection('subscriptions').doc('current').get(),r.collection('tenantModules').where('status','==','enabled').get()]);const billing=sub.data()||{};return{id:t.id,slug:t.slug,name:t.name,logoUrl:t.logoUrl||null,location:t.address||'',phone:t.phone||'',tenantStatus:t.status||'pending',registeredAt:t.createdAt||null,branches:branches.size,staff:staff.size,subscriptionStatus:billing.status||'pending',plan:billing.plan||'Freemium',status:['past_due','failed'].includes(billing.status)?'failed':t.status||'pending',usageDays:0,modules:mods.docs.map(x=>x.data().name||x.id)}}
+async function moduleRows(tenantId){const [mods,ent,active]=await Promise.all([db().collection('modules').orderBy('name').get(),tenantRef(tenantId).collection('moduleEntitlements').get(),tenantRef(tenantId).collection('tenantModules').get()]);const e=new Map(ent.docs.map(x=>[x.id,x.data()])),a=new Map(active.docs.map(x=>[x.id,x.data()]));return mods.docs.map(x=>{const m=x.data(),er=e.get(m.code),ar=a.get(m.code),eligible=er?.source==='manual-payment-or-pro-override'&&er?.status==='entitled';return{id:m.id,code:m.code,name:m.name,description:m.description,category:m.category,version:m.version,publicationStatus:m.status,priceMinor:Number(m.priceMinor||0),entitlementStatus:eligible?'entitled':'unentitled',activationStatus:eligible?(ar?.status||'disabled'):'disabled'}})}
+async function addRecord(tenantId,entity,recordId,payload,op='create'){const root=tenantRef(tenantId),timestamp=now();await db().runTransaction(async tx=>{const seqRef=root.collection('meta').doc('sync'),seq=await tx.get(seqRef),n=Number(seq.data()?.lastSequence||0)+1;tx.set(root.collection('records').doc(`${entity}__${recordId}`),{tenantId,entity,recordId,payload,deleted:op==='delete',updatedAt:timestamp});tx.set(root.collection('syncChanges').doc(String(n)),{sequence:n,entity,recordId,operation:op,payload:op==='delete'?null:payload,createdAt:timestamp});tx.set(seqRef,{lastSequence:n,updatedAt:timestamp},{merge:true})})}
+
+app.get('/platform/summary',platformAuth,asyncRoute(async(_req,res)=>{const tenants=await db().collection('tenants').get();let activeSubscriptions=0,activeUsers=0;for(const doc of tenants.docs){const [s,u]=await Promise.all([tenantRef(doc.id).collection('subscriptions').doc('current').get(),tenantRef(doc.id).collection('staff').where('active','==',true).get()]);if(s.data()?.status==='active')activeSubscriptions++;activeUsers+=u.size}const modules=await db().collection('modules').where('status','==','published').get();res.json({hospitals:tenants.size,activeSubscriptions,publishedModules:modules.size,activeUsers})}))
+app.get('/platform/audit',platformAuth,asyncRoute(async(req,res)=>{const limit=Math.min(500,Math.max(1,Number(req.query.limit||200))),snap=await db().collection('platformAuditLogs').orderBy('createdAt','desc').limit(limit).get();res.json({audit:snap.docs.map(d=>d.data())})}))
+app.get('/platform/settings',platformAuth,asyncRoute(async(_req,res)=>{const snap=await db().collection('platformSettings').doc('platform').get();res.json({settings:{id:'platform',...(snap.data()?.value||{})}})}))
+app.patch('/platform/settings',platformAuth,asyncRoute(async(req,res)=>{const value={...(req.body||{})};delete value.id;await db().collection('platformSettings').doc('platform').set({value,updatedAt:now()});await platformAudit(req.auth.sub,'platform.settings.updated','platform_settings','platform');res.json({settings:{id:'platform',...value}})}))
+app.get('/platform/transactions',platformAuth,asyncRoute(async(_req,res)=>{const tenants=await db().collection('tenants').get(),rows=[];for(const t of tenants.docs){const [b,s]=await Promise.all([tenantRef(t.id).collection('subscriptions').doc('current').get(),tenantSummary(t)]);if(!b.exists)continue;const v=b.data();rows.push({id:v.id||`sub_${t.id}`,hospitalId:t.id,hospitalName:s.name,plan:v.plan||'Freemium',amountMinor:Number(v.amountMinor||0),amount:Number(v.amountMinor||0)/100,date:v.renewsAt||v.updatedAt||v.createdAt,status:v.status==='active'?'paid':v.status==='past_due'?'failed':v.status})}res.json({transactions:rows.sort((a,b)=>String(b.date).localeCompare(String(a.date)))})}))
+app.patch('/platform/transactions/:id/confirm',platformAuth,asyncRoute(async(req,res)=>{const tenants=await db().collection('tenants').get();for(const t of tenants.docs){const ref=tenantRef(t.id).collection('subscriptions').doc('current'),s=await ref.get();if(s.exists&&(s.data().id||`sub_${t.id}`)===req.params.id){await ref.set({status:'active',paymentMethod:'manual',updatedAt:now(),confirmedBy:req.auth.sub,confirmedAt:now()},{merge:true});await platformAudit(req.auth.sub,'subscription.payment_confirmed','subscription',req.params.id,{tenantId:t.id,method:'manual'});return res.json({id:req.params.id,hospitalId:t.id,status:'paid'})}}return apiError(res,'Subscription transaction not found',404)}))
+app.get('/platform/modules',platformAuth,asyncRoute(async(_req,res)=>{const s=await db().collection('modules').orderBy('name').get();res.json({modules:s.docs.map(d=>d.data())})}))
+app.post('/platform/modules',platformAuth,asyncRoute(async(req,res)=>{const code=String(req.body?.code||'').trim().toLowerCase(),name=String(req.body?.name||'').trim();if(!/^[a-z0-9-]+$/.test(code)||!name)return apiError(res,'Module code and name are required',400);const ref=db().collection('modules').doc(code);if((await ref.get()).exists)return apiError(res,'A module with that code already exists',409);const timestamp=now(),item={id:id('module'),code,name,description:String(req.body?.description||''),category:String(req.body?.category||'operations'),version:String(req.body?.version||'1.0.0'),status:'draft',pricingModel:String(req.body?.pricingModel||'addon'),priceMinor:Math.max(0,Number(req.body?.priceMinor||0)),configSchema:req.body?.configSchema||{},createdAt:timestamp,updatedAt:timestamp};await ref.set(item);await platformAudit(req.auth.sub,'module.created','module',item.id,{code});res.status(201).json(item)}))
+app.get('/platform/tenants',platformAuth,asyncRoute(async(_req,res)=>{const s=await db().collection('tenants').get(),items=await Promise.all(s.docs.map(tenantSummary));res.json({tenants:items.sort((a,b)=>a.name.localeCompare(b.name))})}))
+app.post('/platform/tenants/:tenantId/decision',platformAuth,asyncRoute(async(req,res)=>{const decision=String(req.body?.decision||'');if(!['approve','reject'].includes(decision))return apiError(res,'Decision must be approve or reject',400);const ref=tenantRef(req.params.tenantId),s=await ref.get();if(!s.exists)return apiError(res,'Hospital tenant not found',404);const before=s.data();if(before.status!=='pending')return apiError(res,`Only pending registrations can be ${decision==='approve'?'approved':'rejected'}`,409);const timestamp=now(),status=decision==='approve'?'active':'rejected';await db().runTransaction(async tx=>{tx.set(ref,{status,updatedAt:timestamp,[decision==='approve'?'approvedAt':'rejectedAt']:timestamp,[decision==='approve'?'approvedBy':'rejectedBy']:req.auth.sub},{merge:true});if(decision==='approve')tx.set(ref.collection('subscriptions').doc('current'),{status:'pending',startsAt:timestamp,updatedAt:timestamp},{merge:true})});await platformAudit(req.auth.sub,`tenant.${decision}d`,'tenant',s.id,{before:{status:before.status},after:{status}});res.json({tenant:{id:s.id,...before,status,updatedAt:timestamp}})}))
+app.patch('/platform/tenants/:tenantId',platformAuth,asyncRoute(async(req,res)=>{const ref=tenantRef(req.params.tenantId),s=await ref.get();if(!s.exists)return apiError(res,'Hospital tenant not found',404);const t={id:s.id,...s.data()},allowed=new Set(['pending','active','suspended','rejected']),status=req.body?.status==null?t.status:String(req.body.status);if(!allowed.has(status))return apiError(res,'Invalid tenant status',400);if(status!==t.status&&(t.status==='pending'||status==='rejected'))return apiError(res,'Use the registration decision action for pending hospitals',409);const updates={status,updatedAt:now()};if(req.body?.name!=null)updates.name=String(req.body.name).trim();if(req.body?.location!=null)updates.address=String(req.body.location).trim();if(req.body?.phone!=null)updates.phone=String(req.body.phone).trim();let planName;if(req.body?.plan!=null){const plans=await db().collection('subscriptionPlans').get(),plan=plans.docs.map(d=>d.data()).find(p=>p.code.toLowerCase()===String(req.body.plan).toLowerCase()||p.name.toLowerCase()===String(req.body.plan).toLowerCase());if(!plan)return apiError(res,'Unknown subscription plan',400);const subRef=ref.collection('subscriptions').doc('current'),old=await subRef.get(),v={id:old.data()?.id||`sub_${t.id}`,tenantId:t.id,plan:plan.name,planCode:plan.code,amountMinor:plan.priceMinor,status:old.data()?.status||'pending',updatedAt:now(),...(old.exists?{}:{createdAt:now(),startsAt:now()})};await subRef.set(v,{merge:true});planName=plan.name}await ref.set(updates,{merge:true});await platformAudit(req.auth.sub,`tenant.${status}`,'tenant',t.id,{before:{status:t.status},after:{status}});res.json({tenant:{...t,...updates,...(planName?{plan:planName}:{})}})}))
+app.get('/platform/tenants/:tenantId/users',platformAuth,asyncRoute(async(req,res)=>{const t=await tenantRef(req.params.tenantId).get();if(!t.exists)return apiError(res,'Hospital tenant not found',404);const s=await tenantRef(req.params.tenantId).collection('staff').get();res.json({users:s.docs.map(d=>({id:d.id,...d.data(),hospitalId:t.id,hospitalName:t.data().name}))})}))
+app.post('/platform/tenants/:tenantId/users',platformAuth,asyncRoute(async(req,res)=>{const tRef=tenantRef(req.params.tenantId),t=await tRef.get();if(!t.exists)return apiError(res,'Hospital tenant not found',404);const name=String(req.body?.name||'').trim(),email=String(req.body?.email||'').trim().toLowerCase(),password=String(req.body?.password||''),role=String(req.body?.role||'facility_admin'),allowed=new Set(['super_admin','facility_admin','ceo_owner','branch_manager','pharmacist','superintendent_pharmacist','receptionist','cashier','dispenser','pharmacy_cashier','inventory_officer','sales_staff','accountant','warehouse_officer','doctor','nurse','laboratory_technician']);if(!name||!email||password.length<minPasswordLength||!allowed.has(role))return apiError(res,'Name, valid email, supported role, and a sufficiently long password are required',400);let user;try{const branches=await tRef.collection('branches').get(),branchId=req.body?.branchId||branches.docs[0]?.id||null;if(req.body?.branchId&&!branches.docs.some(d=>d.id===branchId))return apiError(res,'Branch does not belong to this hospital',400);user=await authAdmin().createUser({email,password,displayName:name});const timestamp=now(),profile={id:user.uid,tenantId:t.id,branchId,name,email,phone:String(req.body?.phone||''),roles:[role],profession:role,active:true,createdAt:timestamp},items=[['staff',user.uid,{...profile,hospitalId:t.id}],['staff_roles',`${user.uid}__${role}`,{id:`${user.uid}__${role}`,hospitalId:t.id,staffId:user.uid,role}]];await db().runTransaction(async tx=>{const seqRef=tRef.collection('meta').doc('sync'),seq=await tx.get(seqRef);let n=Number(seq.data()?.lastSequence||0);for(const [entity,recordId,payload]of items){n++;tx.set(tRef.collection('records').doc(`${entity}__${recordId}`),{tenantId:t.id,entity,recordId,payload,deleted:false,updatedAt:timestamp});tx.set(tRef.collection('syncChanges').doc(String(n)),{sequence:n,entity,recordId,operation:'create',payload,createdAt:timestamp})}tx.set(seqRef,{lastSequence:n,updatedAt:timestamp},{merge:true});tx.set(tRef.collection('staff').doc(user.uid),profile);tx.set(appAuth(user.uid),profile)});await authAdmin().setCustomUserClaims(user.uid,{appAudience:'hospital',tenantId:t.id,roles:[role]});await platformAudit(req.auth.sub,'hospital.user.created','staff',user.uid,{tenantId:t.id,role});res.status(201).json({user:{...profile,hospitalId:t.id,hospitalName:t.data().name}})}catch(e){if(user?.uid)await authAdmin().deleteUser(user.uid).catch(()=>{});if(e.code==='auth/email-already-exists')return apiError(res,'An account with that email already exists',409);return apiError(res,production?'Could not create hospital account':e.message,400)}}))
+app.get('/platform/tenants/:tenantId/modules',platformAuth,asyncRoute(async(req,res)=>{const t=await tenantRef(req.params.tenantId).get();if(!t.exists)return apiError(res,'Hospital tenant not found',404);res.json({tenant:{id:t.id,...t.data()},modules:await moduleRows(t.id)})}))
+app.patch('/platform/tenants/:tenantId/modules/:code',platformAuth,asyncRoute(async(req,res)=>{const t=tenantRef(req.params.tenantId),[ts,ms]=await Promise.all([t.get(),db().collection('modules').doc(req.params.code).get()]);if(!ts.exists||!ms.exists)return apiError(res,'Tenant or module not found',404);const m=ms.data(),entitled=req.body?.entitled!==false?'entitled':'revoked',activation=entitled==='revoked'||req.body?.enabled===false?'disabled':'enabled',timestamp=now();await Promise.all([t.collection('moduleEntitlements').doc(m.code).set({moduleCode:m.code,source:String(req.body?.source||'platform'),status:entitled,startsAt:timestamp,updatedAt:timestamp},{merge:true}),t.collection('tenantModules').doc(m.code).set({moduleCode:m.code,name:m.name,status:activation,activatedBy:req.auth.sub,activatedAt:activation==='enabled'?timestamp:null},{merge:true})]);await platformAudit(req.auth.sub,`tenant.module.${activation}`,'tenant_module',`${ts.id}:${m.code}`);res.json({tenantId:ts.id,moduleCode:m.code,moduleName:m.name,entitlementStatus:entitled,activationStatus:activation})}))
+app.get('/platform/tickets',platformAuth,asyncRoute(async(_req,res)=>{const s=await db().collection('platformSupportTickets').orderBy('createdAt','desc').limit(500).get(),tickets=await Promise.all(s.docs.map(async d=>{const v=d.data(),t=await tenantRef(v.hospitalId).get();return{...v,hospitalName:t.data()?.name||'Unknown hospital'}}));res.json({tickets})}))
+app.patch('/platform/tickets/:id',platformAuth,asyncRoute(async(req,res)=>{const ref=db().collection('platformSupportTickets').doc(req.params.id),s=await ref.get();if(!s.exists)return apiError(res,'Support ticket not found',404);const t=s.data(),status=req.body?.status==null?t.status:String(req.body.status);if(!['open','resolved'].includes(status))return apiError(res,'Invalid ticket status',400);const reply=req.body?.reply==null?t.reply||'':String(req.body.reply).trim().slice(0,5000);await ref.set({status,reply,updatedAt:now(),updatedBy:req.auth.sub},{merge:true});await platformAudit(req.auth.sub,status==='resolved'?'support.ticket.resolved':'support.ticket.replied','support_ticket',req.params.id);res.json({id:req.params.id,hospitalId:t.hospitalId,issue:t.issue,priority:t.priority,status,reply})}))
+app.get('/platform/messages',platformAuth,asyncRoute(async(_req,res)=>{const s=await db().collection('platformMessages').orderBy('createdAt','desc').limit(500).get(),messages=await Promise.all(s.docs.map(async d=>{const m=d.data(),t=await tenantRef(m.hospitalId).get();return{...m,sentAt:m.createdAt,hospitalName:t.data()?.name||'Unknown hospital'}}));res.json({messages})}))
+app.post('/platform/tenants/:tenantId/messages',platformAuth,asyncRoute(async(req,res)=>{const t=await tenantRef(req.params.tenantId).get(),body=String(req.body?.body||'').trim().slice(0,5000);if(!t.exists)return apiError(res,'Hospital tenant not found',404);if(!body)return apiError(res,'Message body is required',400);const message={id:id('message'),hospitalId:t.id,hospitalName:t.data().name,body,sentAt:now(),sentBy:req.auth.sub};await db().collection('platformMessages').doc(message.id).set({...message,createdAt:message.sentAt});await platformAudit(req.auth.sub,'hospital.message.sent','platform_message',message.id,{tenantId:t.id});res.status(201).json({message})}))
+app.post('/support/tickets',auth,asyncRoute(async(req,res)=>{const issue=String(req.body?.issue||'').trim().slice(0,5000),priority=['low','medium','high'].includes(req.body?.priority)?req.body.priority:'medium';if(!issue)return apiError(res,'Describe the support issue',400);const ticket={id:id('ticket'),hospitalId:req.auth.tenantId,issue,priority,status:'open',reply:'',createdAt:now(),updatedAt:now(),createdBy:req.auth.sub};await db().collection('platformSupportTickets').doc(ticket.id).set(ticket);await recordAudit(ticket.hospitalId,req.auth.sub,'support.ticket.created','support_ticket',ticket.id);res.status(201).json({ticket})}))
+app.get('/tenant/modules',auth,asyncRoute(async(req,res)=>res.json({modules:await moduleRows(req.auth.tenantId)})))
+app.patch('/tenant/modules/:code',auth,requireRole('facility_admin','ceo_owner'),asyncRoute(async(req,res)=>{const m=await db().collection('modules').doc(req.params.code).get();if(!m.exists)return apiError(res,'Module not found',404);const ref=tenantRef(req.auth.tenantId),ent=await ref.collection('moduleEntitlements').doc(req.params.code).get();if(ent.data()?.status!=='entitled'||ent.data()?.source!=='manual-payment-or-pro-override')return apiError(res,'This hospital is not entitled to this module',403);const status=req.body?.enabled===false?'disabled':'enabled';await ref.collection('tenantModules').doc(req.params.code).set({moduleCode:req.params.code,status,activatedBy:req.auth.sub,activatedAt:status==='enabled'?now():null},{merge:true});await recordAudit(req.auth.tenantId,req.auth.sub,`module.${status}`,'module',req.params.code);res.json({moduleCode:req.params.code,activationStatus:status})}))
+
+const allowedEntities=new Set(['hospitals','branches','staff','staff_roles','patients','visits','appointments','payments','sales','products','batches','stock_movements','prescriptions','dispensings','refunds','expenses','customers','suppliers','purchase_orders','transfers','stock_counts','hmo_claims','devices','shift_reports','audit_log','complaints','hr_actions','staff_payments','settings'])
+async function findDeviceInvite(token){
+  if(!/^[A-Za-z0-9_-]{20,100}$/.test(token))return null
+  const store=db(),inviteRef=store.collection('deviceInvites').doc(sha256(token)),indexed=await inviteRef.get()
+  if(indexed.exists){
+    const pointer=indexed.data(),record=await tenantRef(pointer.tenantId).collection('records').doc(`devices__${pointer.recordId}`).get(),value=record.data()
+    if(record.exists&&!value.deleted&&value.payload?.token===token)return{tenantId:pointer.tenantId,recordId:pointer.recordId,payload:value.payload}
+    return null
+  }
+  // Read invitations created before the token lookup collection existed.
+  const snapshot=await store.collectionGroup('records').where('entity','==','devices').get(),match=snapshot.docs.find((doc)=>!doc.data().deleted&&doc.data().payload?.token===token)
+  if(!match)return null
+  const value=match.data(),invite={tenantId:value.tenantId,recordId:value.recordId,payload:value.payload}
+  await inviteRef.create({tenantId:invite.tenantId,recordId:invite.recordId,createdAt:now()}).catch((error)=>{if(error.code!=='already-exists'&&error.code!==6)throw error})
+  return invite
 }
-
-app.get('/platform/tenants/:tenantId/modules', platformAuth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const tenantSnapshot = await getFirestoreStore().collection('tenants').doc(req.params.tenantId).get()
-    if (!tenantSnapshot.exists) return res.status(404).json({ message: 'Hospital tenant not found' })
-    const tenant = { id: tenantSnapshot.id, ...tenantSnapshot.data() }
-    return res.json({ tenant, modules: await firestoreTenantModuleRows(tenant.id) })
-  }
-  const tenant = db.prepare('SELECT id, slug, name FROM tenants WHERE id = ?').get(req.params.tenantId)
-  if (!tenant) return res.status(404).json({ message: 'Hospital tenant not found' })
-  res.json({ tenant, modules: tenantModuleRows(tenant.id) })
-}))
-
-app.patch('/platform/tenants/:tenantId/modules/:code', platformAuth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const tenantRef = getFirestoreStore().collection('tenants').doc(req.params.tenantId)
-    const tenant = await tenantRef.get()
-    const module = db.prepare('SELECT id, code, name FROM modules WHERE code = ? OR lower(name) = lower(?)').get(req.params.code, req.params.code)
-    if (!tenant.exists || !module) return res.status(404).json({ message: 'Tenant or module not found' })
-    const entitlementStatus = req.body?.entitled === false ? 'revoked' : 'entitled'
-    const activationStatus = entitlementStatus === 'revoked' || req.body?.enabled === false ? 'disabled' : 'enabled'
-    const timestamp = now()
-    await Promise.all([
-      tenantRef.collection('moduleEntitlements').doc(module.code).set({ moduleCode: module.code, source: String(req.body?.source || 'platform'), status: entitlementStatus, startsAt: timestamp, updatedAt: timestamp }, { merge: true }),
-      tenantRef.collection('tenantModules').doc(module.code).set({ moduleCode: module.code, name: module.name, status: activationStatus, activatedBy: req.auth.sub, activatedAt: activationStatus === 'enabled' ? timestamp : null }, { merge: true }),
-    ])
-    platformAudit(req.auth.sub, `tenant.module.${activationStatus}`, 'tenant_module', `${tenant.id}:${module.code}`)
-    return res.json({ tenantId: tenant.id, moduleCode: module.code, moduleName: module.name, entitlementStatus, activationStatus })
-  }
-  const tenant = db.prepare('SELECT id FROM tenants WHERE id = ?').get(req.params.tenantId)
-  const module = db.prepare('SELECT id, name FROM modules WHERE code = ? OR lower(name) = lower(?)').get(req.params.code, req.params.code)
-  if (!tenant || !module) return res.status(404).json({ message: 'Tenant or module not found' })
-  const status = req.body?.entitled === false ? 'revoked' : 'entitled'
-  db.prepare('INSERT INTO module_entitlements (tenant_id, module_id, source, status, starts_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, module_id) DO UPDATE SET source = excluded.source, status = excluded.status, starts_at = excluded.starts_at').run(tenant.id, module.id, String(req.body?.source || 'platform'), status, now())
-  const activationStatus = status === 'revoked' || req.body?.enabled === false ? 'disabled' : 'enabled'
-  db.prepare('INSERT INTO tenant_modules (tenant_id, module_id, status, activated_by, activated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, module_id) DO UPDATE SET status = excluded.status, activated_by = excluded.activated_by, activated_at = excluded.activated_at').run(tenant.id, module.id, activationStatus, req.auth.sub, activationStatus === 'enabled' ? now() : null)
-  platformAudit(req.auth.sub, `tenant.module.${activationStatus}`, 'tenant_module', `${tenant.id}:${module.id}`)
-  res.json({ tenantId: tenant.id, moduleCode: req.params.code, moduleName: module.name, entitlementStatus: status, activationStatus })
-}))
-
-app.get('/platform/tickets', platformAuth, asyncRoute(async (_req, res) => {
-  if (firestoreStatus().enabled) {
-    const snapshot = await getFirestoreStore().collection('platformSupportTickets').orderBy('createdAt', 'desc').limit(500).get()
-    const tickets = await Promise.all(snapshot.docs.map(async (doc) => {
-      const ticket = { id: doc.id, ...doc.data() }
-      const tenant = await getFirestoreStore().collection('tenants').doc(ticket.hospitalId).get()
-      return { ...ticket, hospitalName: tenant.data()?.name || 'Unknown hospital' }
-    }))
-    return res.json({ tickets })
-  }
-  const tickets = db.prepare(`SELECT tk.id, tk.tenant_id AS hospitalId, t.name AS hospitalName, tk.issue,
-      tk.priority, tk.status, tk.reply, tk.created_at AS createdAt, tk.updated_at AS updatedAt
-    FROM platform_support_tickets tk JOIN tenants t ON t.id = tk.tenant_id ORDER BY tk.created_at DESC`).all()
-  res.json({ tickets })
-}))
-
-app.patch('/platform/tickets/:id', platformAuth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const ref = getFirestoreStore().collection('platformSupportTickets').doc(req.params.id)
-    const snapshot = await ref.get()
-    if (!snapshot.exists) return res.status(404).json({ message: 'Support ticket not found' })
-    const ticket = snapshot.data()
-    const status = req.body?.status == null ? ticket.status : String(req.body.status)
-    if (!['open', 'resolved'].includes(status)) return res.status(400).json({ message: 'Invalid ticket status' })
-    const reply = req.body?.reply == null ? ticket.reply || '' : String(req.body.reply).trim().slice(0, 5000)
-    await ref.set({ status, reply, updatedAt: now(), updatedBy: req.auth.sub }, { merge: true })
-    platformAudit(req.auth.sub, status === 'resolved' ? 'support.ticket.resolved' : 'support.ticket.replied', 'support_ticket', req.params.id)
-    return res.json({ id: req.params.id, hospitalId: ticket.hospitalId, issue: ticket.issue, priority: ticket.priority, status, reply })
-  }
-  const ticket = db.prepare('SELECT * FROM platform_support_tickets WHERE id = ?').get(req.params.id)
-  if (!ticket) return res.status(404).json({ message: 'Support ticket not found' })
-  const status = req.body?.status == null ? ticket.status : String(req.body.status)
-  if (!['open', 'resolved'].includes(status)) return res.status(400).json({ message: 'Invalid ticket status' })
-  const reply = req.body?.reply == null ? ticket.reply : String(req.body.reply).trim()
-  db.prepare('UPDATE platform_support_tickets SET status = ?, reply = ?, updated_at = ? WHERE id = ?').run(status, reply, now(), ticket.id)
-  platformAudit(req.auth.sub, status === 'resolved' ? 'support.ticket.resolved' : 'support.ticket.replied', 'support_ticket', ticket.id)
-  res.json({ id: ticket.id, hospitalId: ticket.tenant_id, issue: ticket.issue, priority: ticket.priority, status, reply })
-}))
-
-app.get('/platform/messages', platformAuth, asyncRoute(async (_req, res) => {
-  if (firestoreStatus().enabled) {
-    const snapshot = await getFirestoreStore().collection('platformMessages').orderBy('createdAt', 'desc').limit(500).get()
-    const messages = await Promise.all(snapshot.docs.map(async (doc) => {
-      const message = { id: doc.id, ...doc.data(), sentAt: doc.data().createdAt }
-      const tenant = await getFirestoreStore().collection('tenants').doc(message.hospitalId).get()
-      return { ...message, hospitalName: tenant.data()?.name || 'Unknown hospital' }
-    }))
-    return res.json({ messages })
-  }
-  const messages = db.prepare(`SELECT m.id, m.tenant_id AS hospitalId, t.name AS hospitalName, m.body,
-      m.sent_by AS sentBy, m.created_at AS sentAt
-    FROM platform_messages m JOIN tenants t ON t.id = m.tenant_id ORDER BY m.created_at DESC LIMIT 500`).all()
-  res.json({ messages })
-}))
-
-app.post('/platform/tenants/:tenantId/messages', platformAuth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const tenant = await getFirestoreStore().collection('tenants').doc(req.params.tenantId).get()
-    const body = String(req.body?.body || '').trim().slice(0, 5000)
-    if (!tenant.exists) return res.status(404).json({ message: 'Hospital tenant not found' })
-    if (!body) return res.status(400).json({ message: 'Message body is required' })
-    const message = { id: id('message'), hospitalId: tenant.id, hospitalName: tenant.data().name, body, sentAt: now(), sentBy: req.auth.sub }
-    await getFirestoreStore().collection('platformMessages').doc(message.id).set({ ...message, createdAt: message.sentAt })
-    platformAudit(req.auth.sub, 'hospital.message.sent', 'platform_message', message.id, { tenantId: tenant.id })
-    return res.status(201).json({ message })
-  }
-  const tenant = db.prepare('SELECT id, name FROM tenants WHERE id = ?').get(req.params.tenantId)
-  const body = String(req.body?.body || '').trim()
-  if (!tenant) return res.status(404).json({ message: 'Hospital tenant not found' })
-  if (!body) return res.status(400).json({ message: 'Message body is required' })
-  const message = { id: id('message'), hospitalId: tenant.id, hospitalName: tenant.name, body, sentAt: now(), sentBy: req.auth.sub }
-  db.prepare('INSERT INTO platform_messages (id, tenant_id, body, sent_by, created_at) VALUES (?, ?, ?, ?, ?)').run(message.id, tenant.id, body, req.auth.sub, message.sentAt)
-  platformAudit(req.auth.sub, 'hospital.message.sent', 'platform_message', message.id, { tenantId: tenant.id })
-  res.status(201).json({ message })
-}))
-
-app.post('/support/tickets', auth, asyncRoute(async (req, res) => {
-  const issue = String(req.body?.issue || '').trim().slice(0, 5000)
-  const priority = ['low', 'medium', 'high'].includes(req.body?.priority) ? req.body.priority : 'medium'
-  if (!issue) return res.status(400).json({ message: 'Describe the support issue' })
-  const ticket = { id: id('ticket'), hospitalId: req.auth.tenantId, issue, priority, status: 'open', reply: '', createdAt: now(), updatedAt: now(), createdBy: req.auth.sub }
-  if (firestoreStatus().enabled) {
-    await getFirestoreStore().collection('platformSupportTickets').doc(ticket.id).set(ticket)
-  } else {
-    db.prepare('INSERT INTO platform_support_tickets (id, tenant_id, issue, priority, status, reply, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(ticket.id, ticket.hospitalId, ticket.issue, ticket.priority, ticket.status, ticket.reply, ticket.createdAt, ticket.updatedAt)
-  }
-  recordAudit(ticket.hospitalId, req.auth.sub, 'support.ticket.created', 'support_ticket', ticket.id)
-  return res.status(201).json({ ticket })
-}))
-
-app.get('/tenant/modules', auth, asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) return res.json({ modules: await firestoreTenantModuleRows(req.auth.tenantId) })
-  res.json({ modules: tenantModuleRows(req.auth.tenantId) })
-}))
-
-app.patch('/tenant/modules/:code', auth, requireRole('facility_admin', 'ceo_owner'), asyncRoute(async (req, res) => {
-  const module = db.prepare('SELECT id, status FROM modules WHERE code = ?').get(req.params.code)
-  if (!module) return res.status(404).json({ message: 'Module not found' })
-  if (firestoreStatus().enabled) {
-    const tenantRef = getFirestoreStore().collection('tenants').doc(req.auth.tenantId)
-    const entitlement = await tenantRef.collection('moduleEntitlements').doc(req.params.code).get()
-    if (entitlement.data()?.status !== 'entitled' || entitlement.data()?.source !== 'manual-payment-or-pro-override') return res.status(403).json({ message: 'This hospital is not entitled to this module' })
-    const status = req.body?.enabled === false ? 'disabled' : 'enabled'
-    await tenantRef.collection('tenantModules').doc(req.params.code).set({ moduleCode: req.params.code, status, activatedBy: req.auth.sub, activatedAt: status === 'enabled' ? now() : null }, { merge: true })
-    return res.json({ moduleCode: req.params.code, activationStatus: status })
-  }
-  const entitlement = db.prepare('SELECT status, source FROM module_entitlements WHERE tenant_id = ? AND module_id = ?').get(req.auth.tenantId, module.id)
-  if (entitlement?.status !== 'entitled' || entitlement.source !== 'manual-payment-or-pro-override') return res.status(403).json({ message: 'This hospital is not entitled to this module' })
-  const status = req.body?.enabled === false ? 'disabled' : 'enabled'
-  db.prepare('INSERT INTO tenant_modules (tenant_id, module_id, status, activated_by, activated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, module_id) DO UPDATE SET status = excluded.status, activated_by = excluded.activated_by, activated_at = excluded.activated_at').run(req.auth.tenantId, module.id, status, req.auth.sub, status === 'enabled' ? now() : null)
-  recordAudit(req.auth.tenantId, req.auth.sub, `module.${status}`, 'module', module.id)
-  res.json({ moduleCode: req.params.code, activationStatus: status })
-}))
-
-// Keep this list aligned with the frontend's durable domain stores. The
-// backend stores synced records generically, so every user-facing entity can
-// safely be accepted here while transport-only stores stay private to the
-// client.
-const allowedEntities = new Set([
-  'hospitals', 'branches', 'staff', 'staff_roles', 'patients', 'visits',
-  'appointments', 'payments', 'sales', 'products', 'batches', 'stock_movements',
-  'prescriptions', 'dispensings', 'refunds', 'expenses', 'customers', 'suppliers',
-  'purchase_orders', 'transfers', 'stock_counts', 'hmo_claims', 'devices',
-  'shift_reports', 'audit_log', 'complaints', 'hr_actions', 'staff_payments',
-  'settings',
-])
-
-async function findDeviceInvite(token) {
-  if (!token) return null
-  if (firestoreStatus().enabled) {
-    const matches = await getFirestoreStore().collectionGroup('records').where('entity', '==', 'devices').get()
-    const match = matches.docs.find((doc) => {
-      const row = doc.data()
-      return !row.deleted && row.payload?.token === token
-    })
-    if (!match) return null
-    const row = match.data()
-    return { tenantId: row.tenantId, recordId: row.recordId, payload: row.payload, ref: match.ref }
-  }
-  const rows = db.prepare("SELECT tenant_id, record_id, payload_json FROM records WHERE entity = 'devices' AND deleted = 0").all()
-  for (const row of rows) {
-    const payload = parse(row.payload_json, null)
-    if (payload?.token === token) return { tenantId: row.tenant_id, recordId: row.record_id, payload }
-  }
-  return null
-}
-
-async function saveDeviceInvite(tenantId, recordId, payload, operation = 'create') {
-  const timestamp = now()
-  if (firestoreStatus().enabled) {
-    const store = getFirestoreStore()
-    const tenantRef = store.collection('tenants').doc(tenantId)
-    const recordRef = tenantRef.collection('records').doc(`devices__${recordId}`)
-    await store.runTransaction(async (transaction) => {
-      const sequenceRef = tenantRef.collection('meta').doc('sync')
-      const sequence = await transaction.get(sequenceRef)
-      const currentSequence = Number(sequence.data()?.lastSequence || 0) + 1
-      transaction.set(recordRef, { tenantId, entity: 'devices', recordId, payload, deleted: false, updatedAt: timestamp })
-      transaction.set(sequenceRef, { lastSequence: currentSequence, updatedAt: timestamp }, { merge: true })
-      transaction.set(tenantRef.collection('syncChanges').doc(String(currentSequence)), {
-        sequence: currentSequence, entity: 'devices', recordId, operation, payload, createdAt: timestamp,
-      })
-    })
-    return
-  }
-  const transaction = db.transaction(() => {
-    db.prepare('INSERT INTO records (tenant_id, entity, record_id, payload_json, deleted, updated_at) VALUES (?, ?, ?, ?, 0, ?) ON CONFLICT(tenant_id, entity, record_id) DO UPDATE SET payload_json = excluded.payload_json, deleted = 0, updated_at = excluded.updated_at')
-      .run(tenantId, 'devices', recordId, json(payload), timestamp)
-    db.prepare('INSERT INTO sync_changes (tenant_id, entity, record_id, operation, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(tenantId, 'devices', recordId, operation, json(payload), timestamp)
+async function createDeviceInvite(tenantId,recordId,device,actorId){
+  const store=db(),root=tenantRef(tenantId),inviteRef=store.collection('deviceInvites').doc(sha256(device.token)),sequenceRef=root.collection('meta').doc('sync'),recordRef=root.collection('records').doc(`devices__${recordId}`),auditRef=root.collection('auditLogs').doc(id('audit'))
+  return store.runTransaction(async(transaction)=>{
+    const [invite,sequence]=await Promise.all([transaction.get(inviteRef),transaction.get(sequenceRef)])
+    if(invite.exists)return false
+    const next=Number(sequence.data()?.lastSequence||0)+1,timestamp=now()
+    transaction.create(inviteRef,{tenantId,recordId,createdAt:timestamp})
+    transaction.set(recordRef,{tenantId,entity:'devices',recordId,payload:device,deleted:false,updatedAt:timestamp})
+    transaction.set(root.collection('syncChanges').doc(String(next)),{sequence:next,entity:'devices',recordId,operation:'create',payload:device,createdAt:timestamp})
+    transaction.set(sequenceRef,{lastSequence:next,updatedAt:timestamp},{merge:true})
+    transaction.create(auditRef,{id:auditRef.id,tenantId,actorId,action:'device.invited',entity:'device',recordId,metadata:{name:device.name},createdAt:timestamp})
+    return true
   })
-  transaction()
 }
+app.post('/devices/invite',auth,requireRole('facility_admin','ceo_owner','super_admin'),asyncRoute(async(req,res)=>{const recordId=String(req.body?.id||'').trim(),name=String(req.body?.name||'').trim(),token=String(req.body?.token||'').trim();if(!recordId||!name||!(/^[A-Za-z0-9_-]{20,100}$/).test(token))return apiError(res,'A device name and valid access token are required',400);const device={id:recordId,hospitalId:req.auth.tenantId,name,token,status:'invited',createdBy:req.auth.sub,createdAt:now(),updatedAt:now()};if(!await createDeviceInvite(req.auth.tenantId,recordId,device,req.auth.sub))return apiError(res,'This device access token already exists',409);res.status(201).json({device})}))
+app.get('/devices/join',asyncRoute(async(req,res)=>{const inv=await findDeviceInvite(String(req.query.token||''));if(!inv)return apiError(res,'Device access link not found',404);const t=await tenantRef(inv.tenantId).get();if(!t.exists||t.data().status!=='active')return apiError(res,'This hospital workspace is not active',403);res.json({device:inv.payload})}))
+app.post('/devices/join',asyncRoute(async(req,res)=>{const inv=await findDeviceInvite(String(req.body?.token||''));if(!inv)return apiError(res,'Device access link not found',404);const t=await tenantRef(inv.tenantId).get();if(!t.exists||t.data().status!=='active')return apiError(res,'This hospital workspace is not active',403);if(!['invited','pending'].includes(inv.payload.status))return apiError(res,'This device invitation is no longer available',409);const device={...inv.payload,status:'pending',requestedName:String(req.body?.name||'').trim().slice(0,100)||inv.payload.name,requestedAt:now(),updatedAt:now()};await addRecord(inv.tenantId,'devices',inv.recordId,device,'update');res.json({device})}))
+app.get('/devices',auth,requireRole('facility_admin','ceo_owner','super_admin'),asyncRoute(async(req,res)=>{const s=await tenantRef(req.auth.tenantId).collection('records').where('entity','==','devices').get();res.json({devices:s.docs.filter(d=>!d.data().deleted).map(d=>d.data().payload).filter(Boolean)})}))
+app.patch('/devices/:deviceId',auth,requireRole('facility_admin','ceo_owner','super_admin'),asyncRoute(async(req,res)=>{const status=String(req.body?.status||'');if(!['approved','rejected','revoked'].includes(status))return apiError(res,'Invalid device status',400);const ref=tenantRef(req.auth.tenantId).collection('records').doc(`devices__${req.params.deviceId}`),s=await ref.get(),old=s.data()?.payload;if(!s.exists||s.data().deleted||!old)return apiError(res,'Device not found',404);const allowed=status==='approved'||status==='rejected'?old.status==='pending':old.status==='approved';if(!allowed)return apiError(res,`A device cannot move from ${old.status} to ${status}`,409);const device={...old,status,decidedBy:req.auth.sub,decidedAt:now(),updatedAt:now()};await addRecord(req.auth.tenantId,'devices',old.id,device,'update');await recordAudit(req.auth.tenantId,req.auth.sub,`device.${status}`,'device',old.id,{before:{status:old.status},after:{status}});res.json({device})}))
+app.get('/sync/snapshot',auth,asyncRoute(async(req,res)=>{let pageState=null;if(req.query.cursor){try{const c=jwt.verify(String(req.query.cursor),JWT_SECRET,{algorithms:['HS256'],audience:'sync-snapshot'});if(c.tenantId!==req.auth.tenantId||!Number.isSafeInteger(c.highWater)||(c.after!==null&&typeof c.after!=='string'))throw Error();pageState={after:c.after,highWater:c.highWater}}catch{return apiError(res,'Invalid or expired snapshot cursor. Restart the snapshot.',400)}}const s=await readFirestoreSnapshot({tenantId:req.auth.tenantId,pageState,pageSize:200}),nextCursor=s.nextState?jwt.sign({...s.nextState,tenantId:req.auth.tenantId,aud:'sync-snapshot'},JWT_SECRET,{expiresIn:'1h'}):null;res.json({records:s.records,nextCursor,deltaCursor:s.deltaCursor})}))
+app.post('/sync',auth,asyncRoute(async(req,res)=>{const ops=Array.isArray(req.body?.ops)?req.body.ops.slice(0,50):[];try{res.json(await applyFirestoreSync({tenantId:req.auth.tenantId,actorId:req.auth.sub,ops,allowedEntities,timestamp:now}))}catch(e){console.error('Firestore sync failed',e.name);apiError(res,'Firestore sync failed')}}))
+app.get('/sync',auth,asyncRoute(async(req,res)=>{const cursor=Math.max(0,Number(req.query.cursor||0));res.json(await readFirestoreChanges({tenantId:req.auth.tenantId,cursor}))}))
+app.get('/admin/summary',auth,requireRole('facility_admin','ceo_owner','super_admin'),asyncRoute(async(req,res)=>{const ref=tenantRef(req.auth.tenantId),[t,staff,audit]=await Promise.all([ref.get(),ref.collection('staff').get(),ref.collection('auditLogs').count().get()]);if(!t.exists)return apiError(res,'Hospital workspace not found',404);res.json({tenant:{id:t.id,slug:t.data().slug,name:t.data().name,logoUrl:t.data().logoUrl||null},staffCount:staff.size,auditCount:audit.data().count})}))
 
-app.post('/devices/invite', auth, requireRole('facility_admin', 'ceo_owner', 'super_admin'), asyncRoute(async (req, res) => {
-  const recordId = String(req.body?.id || '').trim()
-  const name = String(req.body?.name || '').trim()
-  const token = String(req.body?.token || '').trim()
-  if (!recordId || !name || !/^[A-Za-z0-9_-]{20,100}$/.test(token)) return res.status(400).json({ message: 'A device name and valid access token are required' })
-  const existing = await findDeviceInvite(token)
-  if (existing) {
-    if (existing.tenantId === req.auth.tenantId && existing.recordId === recordId) return res.json({ device: existing.payload })
-    return res.status(409).json({ message: 'This device access token already exists' })
+app.use((error,req,res,_next)=>{if(error.code==='auth/configuration-not-found')return res.status(503).json({message:error.message});const status=error.message==='Origin not allowed'?403:Number.isInteger(error.status)&&error.status>=400&&error.status<500?error.status:500;if(status===500)console.error('Unhandled backend error',{path:req.path,code:error.code||null,name:error?.name||'Error'});res.status(status).json({message:status===403?'Request origin is not allowed':status===400?'Invalid request':'Server error'})})
+async function start(){
+  if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT must be an integer from 1 to 65535')
+  await seedPlatform()
+  const server = app.listen(PORT,HOST,()=>console.log(`Dibia HMS backend listening on ${HOST}:${PORT}`))
+  const shutdown = (signal) => {
+    console.log(`Backend received ${signal}; closing server`)
+    server.close((error) => { if (error) { console.error('Backend shutdown failed', error.name); process.exitCode = 1 } })
   }
-  const device = { id: recordId, hospitalId: req.auth.tenantId, name, token, status: 'invited', createdBy: req.auth.sub, createdAt: now(), updatedAt: now() }
-  await saveDeviceInvite(req.auth.tenantId, recordId, device)
-  recordAudit(req.auth.tenantId, req.auth.sub, 'device.invited', 'device', recordId, { name })
-  return res.status(201).json({ device })
-}))
-
-app.get('/devices/join', asyncRoute(async (req, res) => {
-  const invite = await findDeviceInvite(String(req.query.token || ''))
-  if (!invite) return res.status(404).json({ message: 'Device access link not found' })
-  const tenant = firestoreStatus().enabled
-    ? (await getFirestoreStore().collection('tenants').doc(invite.tenantId).get()).data()
-    : db.prepare('SELECT status FROM tenants WHERE id = ?').get(invite.tenantId)
-  if (!tenant || tenant.status !== 'active') return res.status(403).json({ message: 'This hospital workspace is not active' })
-  return res.json({ device: invite.payload })
-}))
-
-app.post('/devices/join', asyncRoute(async (req, res) => {
-  const invite = await findDeviceInvite(String(req.body?.token || ''))
-  if (!invite) return res.status(404).json({ message: 'Device access link not found' })
-  const tenant = firestoreStatus().enabled
-    ? (await getFirestoreStore().collection('tenants').doc(invite.tenantId).get()).data()
-    : db.prepare('SELECT status FROM tenants WHERE id = ?').get(invite.tenantId)
-  if (!tenant || tenant.status !== 'active') return res.status(403).json({ message: 'This hospital workspace is not active' })
-  if (invite.payload.status !== 'invited' && invite.payload.status !== 'pending') return res.status(409).json({ message: 'This device invitation is no longer available' })
-  const payload = { ...invite.payload, status: 'pending', requestedName: String(req.body?.name || '').trim().slice(0, 100) || invite.payload.name, requestedAt: now(), updatedAt: now() }
-  await saveDeviceInvite(invite.tenantId, invite.recordId, payload, 'update')
-  return res.json({ device: payload })
-}))
-
-app.get('/devices', auth, requireRole('facility_admin', 'ceo_owner', 'super_admin'), asyncRoute(async (req, res) => {
-  let devices
-  if (firestoreStatus().enabled) {
-    const result = await getFirestoreStore().collection('tenants').doc(req.auth.tenantId).collection('records').where('entity', '==', 'devices').get()
-    devices = result.docs.filter((doc) => !doc.data().deleted).map((doc) => doc.data().payload).filter(Boolean)
-  } else {
-    devices = db.prepare("SELECT payload_json FROM records WHERE tenant_id = ? AND entity = 'devices' AND deleted = 0").all(req.auth.tenantId).map((row) => parse(row.payload_json, null)).filter(Boolean)
-  }
-  return res.json({ devices })
-}))
-
-app.patch('/devices/:deviceId', auth, requireRole('facility_admin', 'ceo_owner', 'super_admin'), asyncRoute(async (req, res) => {
-  const status = String(req.body?.status || '')
-  if (!['approved', 'rejected', 'revoked'].includes(status)) return res.status(400).json({ message: 'Invalid device status' })
-  let existing
-  if (firestoreStatus().enabled) {
-    const ref = getFirestoreStore().collection('tenants').doc(req.auth.tenantId).collection('records').doc(`devices__${req.params.deviceId}`)
-    const snapshot = await ref.get()
-    if (snapshot.exists && !snapshot.data().deleted) existing = snapshot.data().payload
-  } else {
-    const row = db.prepare("SELECT payload_json FROM records WHERE tenant_id = ? AND entity = 'devices' AND record_id = ? AND deleted = 0").get(req.auth.tenantId, req.params.deviceId)
-    existing = row ? parse(row.payload_json, null) : null
-  }
-  if (!existing) return res.status(404).json({ message: 'Device not found' })
-  const allowed = status === 'approved' ? existing.status === 'pending' : status === 'rejected' ? existing.status === 'pending' : existing.status === 'approved'
-  if (!allowed) return res.status(409).json({ message: `A device cannot move from ${existing.status} to ${status}` })
-  const payload = { ...existing, status, decidedBy: req.auth.sub, decidedAt: now(), updatedAt: now() }
-  await saveDeviceInvite(req.auth.tenantId, existing.id, payload, 'update')
-  recordAudit(req.auth.tenantId, req.auth.sub, `device.${status}`, 'device', existing.id, { before: { status: existing.status }, after: { status } })
-  return res.json({ device: payload })
-}))
-
-app.get('/sync/snapshot', auth, async (req, res) => {
-  let pageState = null
-  if (req.query.cursor) {
-    try {
-      const state = jwt.verify(String(req.query.cursor), JWT_SECRET, { algorithms: ['HS256'], audience: 'sync-snapshot' })
-      const firestoreCursor = Object.hasOwn(state, 'after')
-      const validPosition = firestoreCursor
-        ? state.after === null || typeof state.after === 'string'
-        : typeof state.afterEntity === 'string' && typeof state.afterRecord === 'string'
-      if (state.tenantId !== req.auth.tenantId || !Number.isSafeInteger(state.highWater) || !validPosition) throw new Error('Invalid cursor')
-      pageState = firestoreCursor
-        ? { after: state.after, highWater: state.highWater }
-        : { afterEntity: state.afterEntity, afterRecord: state.afterRecord, highWater: state.highWater }
-    } catch {
-      return res.status(400).json({ message: 'Invalid or expired snapshot cursor. Restart the snapshot.' })
-    }
-  }
-  if (firestoreStatus().enabled) {
-    try {
-      const snapshot = await readFirestoreSnapshot({ tenantId: req.auth.tenantId, pageState, pageSize: 200 })
-      const nextCursor = snapshot.nextState ? jwt.sign({ ...snapshot.nextState, tenantId: req.auth.tenantId, aud: 'sync-snapshot' }, JWT_SECRET, { expiresIn: '1h' }) : null
-      return res.json({ records: snapshot.records, nextCursor, deltaCursor: snapshot.deltaCursor })
-    } catch (error) {
-      return res.status(500).json({ message: 'Hospital data snapshot failed' })
-    }
-  }
-  const highWater = pageState?.highWater ?? Number(db.prepare('SELECT COALESCE(MAX(sequence), 0) AS cursor FROM sync_changes WHERE tenant_id = ?').get(req.auth.tenantId).cursor)
-  const afterEntity = pageState?.afterEntity || ''
-  const afterRecord = pageState?.afterRecord || ''
-  const rows = db.prepare(`SELECT entity, record_id, payload_json FROM records
-    WHERE tenant_id = ? AND deleted = 0 AND (entity > ? OR (entity = ? AND record_id > ?))
-    ORDER BY entity ASC, record_id ASC LIMIT 201`).all(req.auth.tenantId, afterEntity, afterEntity, afterRecord)
-  const page = rows.slice(0, 200)
-  const last = page.at(-1)
-  const nextCursor = rows.length > 200 && last
-    ? jwt.sign({ tenantId: req.auth.tenantId, aud: 'sync-snapshot', afterEntity: last.entity, afterRecord: last.record_id, highWater }, JWT_SECRET, { expiresIn: '1h' })
-    : null
-  return res.json({ records: page.map((row) => ({ entity: row.entity, recordId: row.record_id, payload: parse(row.payload_json, null) })), nextCursor, deltaCursor: highWater })
-})
-
-app.post('/sync', auth, async (req, res) => {
-  const ops = Array.isArray(req.body?.ops) ? req.body.ops.slice(0, 50) : []
-  if (!firestoreStatus().enabled) {
-    const actor = db.prepare('SELECT id FROM staff WHERE id = ? AND tenant_id = ? AND active = 1').get(req.auth.sub, req.auth.tenantId)
-    if (!actor) return res.status(401).json({ message: 'Active hospital staff session required' })
-  }
-  if (firestoreStatus().enabled) {
-    try {
-      return res.json(await applyFirestoreSync({ tenantId: req.auth.tenantId, actorId: req.auth.sub, ops, allowedEntities, timestamp: now }))
-    } catch (error) {
-      return res.status(500).json({ message: 'Firestore sync failed', ...(production ? {} : { detail: error.message }) })
-    }
-  }
-  const acked = []
-  const rejected = []
-  const transaction = db.transaction(() => {
-    for (const operation of ops) {
-      const opId = String(operation?.opId || '')
-      const entity = String(operation?.entity || '')
-      if (!opId || !allowedEntities.has(entity)) {
-        rejected.push({ opId, code: 'validation_error', message: 'Invalid operation or entity', retryable: false })
-        continue
-      }
-      if (!['create', 'update', 'delete'].includes(operation.op)) {
-        rejected.push({ opId, code: 'validation_error', message: 'Operation must be create, update, or delete', retryable: false })
-        continue
-      }
-      const elevatedEntities = new Set(['hospitals', 'branches', 'staff', 'staff_roles', 'settings'])
-      if (elevatedEntities.has(entity) && !req.auth.roles?.some((role) => ['facility_admin', 'ceo_owner', 'super_admin'].includes(role))) {
-        rejected.push({ opId, code: 'forbidden', message: 'Hospital admin permission is required for this record', retryable: false })
-        continue
-      }
-      if (!elevatedEntities.has(entity) && !canWriteEntity({ entity, operation: operation.op, roles: req.auth.roles, grants: req.auth.permGrants, denies: req.auth.permDenies })) {
-        rejected.push({ opId, code: 'forbidden', message: 'Your role does not have permission to change this record', retryable: false })
-        continue
-      }
-      const prior = db.prepare('SELECT result_json FROM sync_operations WHERE tenant_id = ? AND op_id = ?').get(req.auth.tenantId, opId)
-      if (prior) {
-        const result = parse(prior.result_json, {})
-        if (result.acked) acked.push(opId)
-        else rejected.push(result.rejected)
-        continue
-      }
-      const recordId = String(operation.recordId || operation.payload?.id || '')
-      if (!recordId) {
-        rejected.push({ opId, code: 'validation_error', message: 'recordId is required', retryable: false })
-        continue
-      }
-      const recordHospitalId = operation.payload?.hospitalId
-      if (operation.payload?.actorId && operation.payload.actorId !== req.auth.sub) {
-        rejected.push({ opId, code: 'forbidden', message: 'Record actor does not match the signed-in staff member', retryable: false })
-        continue
-      }
-      if (recordHospitalId && recordHospitalId !== req.auth.tenantId) {
-        rejected.push({ opId, code: 'forbidden', message: 'Record belongs to a different hospital', retryable: false })
-        continue
-      }
-      const branchId = operation.payload?.branchId
-      if (branchId && !firestoreStatus().enabled) {
-        const isAdmin = req.auth.roles?.some((role) => ['facility_admin', 'ceo_owner', 'super_admin'].includes(role))
-        if (req.auth.branchId && req.auth.branchId !== branchId && !isAdmin) {
-          rejected.push({ opId, code: 'forbidden', message: 'Record belongs to a different branch', retryable: false })
-          continue
-        }
-        const branch = db.prepare('SELECT id FROM branches WHERE id = ? AND tenant_id = ?').get(branchId, req.auth.tenantId)
-        if (!branch) {
-          rejected.push({ opId, code: 'forbidden', message: 'Branch does not belong to the signed-in hospital', retryable: false })
-          continue
-        }
-      }
-      const action = operation.op === 'delete' ? 'delete' : operation.op === 'update' ? 'update' : 'create'
-      const payload = { ...sanitizeSyncPayload(operation.payload || {}), id: recordId, hospitalId: req.auth.tenantId, ...(entity === 'audit_log' ? { actorId: req.auth.sub } : {}), updatedAt: now() }
-      db.prepare('INSERT INTO records (tenant_id, entity, record_id, payload_json, deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, entity, record_id) DO UPDATE SET payload_json = excluded.payload_json, deleted = excluded.deleted, updated_at = excluded.updated_at').run(req.auth.tenantId, entity, recordId, json(payload), action === 'delete' ? 1 : 0, now())
-      db.prepare('INSERT INTO sync_changes (tenant_id, entity, record_id, operation, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.auth.tenantId, entity, recordId, action, action === 'delete' ? null : json(payload), now())
-      if (entity === 'staff') {
-        db.prepare(`UPDATE staff SET name = COALESCE(?, name), phone = COALESCE(?, phone), profession = COALESCE(?, profession),
-          branch_id = COALESCE(?, branch_id), active = COALESCE(?, active), perm_grants_json = COALESCE(?, perm_grants_json),
-          perm_denies_json = COALESCE(?, perm_denies_json), updated_at = ? WHERE id = ? AND tenant_id = ?`).run(
-          payload.name == null ? null : String(payload.name), payload.phone == null ? null : String(payload.phone),
-          payload.profession == null ? null : String(payload.profession), payload.branchId || null,
-          action === 'delete' ? 0 : payload.active == null ? null : payload.active === false ? 0 : 1,
-          payload.permGrants == null ? null : json(payload.permGrants), payload.permDenies == null ? null : json(payload.permDenies),
-          now(), recordId, req.auth.tenantId,
-        )
-      }
-      if (entity === 'staff_roles') {
-        const staffId = String(payload.staffId || '')
-        if (staffId) {
-          const roleRows = db.prepare("SELECT payload_json FROM records WHERE tenant_id = ? AND entity = 'staff_roles' AND deleted = 0").all(req.auth.tenantId)
-          const roles = roleRows.map((row) => parse(row.payload_json, {})).filter((row) => row.staffId === staffId && typeof row.role === 'string').map((row) => row.role)
-          db.prepare('UPDATE staff SET roles_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?').run(json([...new Set(roles)]), now(), staffId, req.auth.tenantId)
-        }
-      }
-      recordAudit(req.auth.tenantId, req.auth.sub, `sync.${action}`, entity, recordId)
-      const result = { acked: true }
-      db.prepare('INSERT INTO sync_operations (tenant_id, op_id, result_json, created_at) VALUES (?, ?, ?, ?)').run(req.auth.tenantId, opId, json(result), now())
-      acked.push(opId)
-    }
-  })
-  try { transaction() } catch (error) { return res.status(500).json({ message: 'Sync transaction failed', ...(production ? {} : { detail: error.message }) }) }
-  res.json({ acked, rejected })
-})
-
-app.get('/sync', auth, async (req, res) => {
-  const cursor = Math.max(0, Number(req.query.cursor || 0))
-  if (firestoreStatus().enabled) {
-    try { return res.json(await readFirestoreChanges({ tenantId: req.auth.tenantId, cursor })) } catch (error) { return res.status(500).json({ message: 'Firestore pull failed', ...(production ? {} : { detail: error.message }) }) }
-  }
-  const changes = db.prepare('SELECT sequence, entity, record_id, operation, payload_json, created_at FROM sync_changes WHERE tenant_id = ? AND sequence > ? ORDER BY sequence ASC LIMIT 500').all(req.auth.tenantId, cursor).map((change) => ({ cursor: change.sequence, entity: change.entity, recordId: change.record_id, op: change.operation, payload: parse(change.payload_json, null), at: change.created_at }))
-  res.json({ changes, cursor: changes.length ? changes[changes.length - 1].cursor : cursor })
-})
-
-app.get('/admin/summary', auth, requireRole('facility_admin', 'ceo_owner', 'super_admin'), asyncRoute(async (req, res) => {
-  if (firestoreStatus().enabled) {
-    const store = getFirestoreStore()
-    const [tenantSnapshot, staffSnapshot, auditCountSnapshot] = await Promise.all([
-      store.collection('tenants').doc(req.auth.tenantId).get(),
-      store.collection('tenants').doc(req.auth.tenantId).collection('staff').get(),
-      store.collection('tenants').doc(req.auth.tenantId).collection('syncChanges').where('entity', '==', 'audit_log').count().get(),
-    ])
-    if (!tenantSnapshot.exists) return res.status(404).json({ message: 'Hospital workspace not found' })
-    const tenant = { id: tenantSnapshot.id, slug: tenantSnapshot.data().slug, name: tenantSnapshot.data().name, logoUrl: tenantSnapshot.data().logoUrl || null }
-    return res.json({ tenant, staffCount: staffSnapshot.size, auditCount: auditCountSnapshot.data().count })
-  }
-  const tenantId = req.auth.tenantId
-  const staffCount = db.prepare('SELECT COUNT(*) AS count FROM staff WHERE tenant_id = ?').get(tenantId).count
-  const auditCount = db.prepare('SELECT COUNT(*) AS count FROM audit_log WHERE tenant_id = ?').get(tenantId).count
-  const tenant = db.prepare('SELECT id, slug, name, logo_url AS logoUrl FROM tenants WHERE id = ?').get(tenantId)
-  res.json({ tenant, staffCount, auditCount })
-}))
-
-app.use((error, _req, res, _next) => {
-  const status = error.message === 'Origin not allowed' ? 403 : 500
-  if (status === 500) console.error('Unhandled backend error', error?.name || 'Error')
-  return res.status(status).json({ message: status === 403 ? 'Request origin is not allowed' : 'Server error' })
-})
-app.listen(PORT, HOST, () => console.log(`Dibia HMS backend listening on ${HOST}:${PORT}`))
+  process.once('SIGTERM', shutdown)
+  process.once('SIGINT', shutdown)
+}
+start().catch(error=>{console.error('Backend startup failed',error.code||error.name||'Error');process.exitCode=1})

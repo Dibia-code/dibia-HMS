@@ -66,6 +66,23 @@ export function getDB() {
             }
           }
         }
+
+        if (oldVersion < 6) {
+          // Older offline databases may contain duplicate legacy values in
+          // indexes that used to be unique. Rebuild those indexes as
+          // non-unique so one dirty cache cannot abort the entire upgrade.
+          // The backend remains authoritative for account and tenant identity.
+          for (const [name, def] of Object.entries(STORES)) {
+            if (!db.objectStoreNames.contains(name)) continue
+            const store = transaction.objectStore(name)
+            for (const idx of def.indexes || []) {
+              if (!store.indexNames.contains(idx.name)) continue
+              if (store.index(idx.name).unique === !!idx.unique) continue
+              store.deleteIndex(idx.name)
+              store.createIndex(idx.name, idx.keyPath, { unique: !!idx.unique })
+            }
+          }
+        }
       },
       blocked() {
         // Another tab holds an older version open. Surfaced so the UI can warn.

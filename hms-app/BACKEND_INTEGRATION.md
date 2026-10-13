@@ -31,7 +31,7 @@ Console login is separate:
 
 Verify the console password on the server. Set `CONSOLE_ADMIN_EMAIL` and `CONSOLE_ADMIN_PASSWORD` only in the backend deployment environment. Never use a `VITE_*` variable for a real secret, since Vite embeds those values into the browser bundle. The console includes fixed public preview credentials for Vite development only; real production sign-in must use backend session endpoints.
 
-The HMS sync path now has a hospital-scoped initial snapshot plus push/pull deltas. Local IndexedDB remains the offline device store and outbox; SQLite is not a network-failure cache. Production must use the server's authoritative persistent store and exact HTTPS origins. The sync contract still needs complete action/permission checks and atomic domain workflows before patient data is used.
+The HMS sync path now has a hospital-scoped initial snapshot plus push/pull deltas. Local IndexedDB remains the offline device store and outbox; Cloud Firestore is the authoritative server store. Production must use exact HTTPS origins. The sync contract still needs complete action/permission checks and atomic domain workflows before patient data is used.
 
 ## Hospital data and tenant scope
 

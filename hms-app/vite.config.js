@@ -4,8 +4,7 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // app.dibia.app — offline-first PWA.
-// The service worker precaches the app shell so the whole SPA boots with no network,
-// which is the backbone of the offline requirement (writes are handled separately in src/data).
+// Precache the shell; app data is handled separately.
 export default defineConfig({
   plugins: [
     react(),
@@ -21,13 +20,13 @@ export default defineConfig({
         display: 'standalone',
         start_url: '/',
         icons: [
-          // SVG icon covers all sizes; swap in rasterised PNGs before store submission.
+          // SVG icons scale to every size.
           { src: 'pwa-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
           { src: 'pwa-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' },
         ],
       },
       workbox: {
-        // Precache the built shell; SPA navigations fall back to index.html when offline.
+        // Cache the shell and preserve API requests.
         globPatterns: ['**/*.{js,css,html,svg,woff2}'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//],
@@ -36,8 +35,7 @@ export default defineConfig({
     }),
   ],
   resolve: {
-    // Matches the "@/*" -> "src/*" alias in jsconfig.json (editor) so build and
-    // editor agree. All app imports use "@/...".
+    // Match the editor's @/* alias.
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   server: {

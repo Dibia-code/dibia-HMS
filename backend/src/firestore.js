@@ -1,18 +1,29 @@
-import { applicationDefault, getApp, getApps, initializeApp } from 'firebase-admin/app'
+import { applicationDefault, cert, getApp, getApps, initializeApp } from 'firebase-admin/app'
 import { FieldPath, getFirestore } from 'firebase-admin/firestore'
 import { getAuth } from 'firebase-admin/auth'
 import { canWriteEntity, sanitizeSyncPayload } from './policy.js'
 
-// Firestore is initialized only when explicitly enabled. This keeps local
-// development usable with SQLite while allowing the same API server to run
-// against Firebase in staging and production.
+// Firestore is the backend's only persistent data store.
 export function getFirestoreStore() {
-  if (String(process.env.DATA_STORE || 'sqlite').toLowerCase() !== 'firestore') return null
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+  let credential = applicationDefault()
+  if (serviceAccountJson) {
+    let serviceAccount
+    try {
+      serviceAccount = JSON.parse(serviceAccountJson)
+    } catch {
+      throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON must contain valid service account JSON')
+    }
+    if (process.env.FIREBASE_PROJECT_ID && serviceAccount.project_id !== process.env.FIREBASE_PROJECT_ID) {
+      throw new Error('FIREBASE_PROJECT_ID must match the Firebase Admin service account project')
+    }
+    credential = cert(serviceAccount)
+  }
 
   const app = getApps().length
     ? getApp()
     : initializeApp({
-        credential: applicationDefault(),
+        credential,
         projectId: process.env.FIREBASE_PROJECT_ID || undefined,
       })
 
@@ -26,7 +37,7 @@ export function getFirebaseAuth() {
 
 export function firestoreStatus() {
   return {
-    enabled: String(process.env.DATA_STORE || 'sqlite').toLowerCase() === 'firestore',
+    enabled: true,
     projectId: process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || null,
   }
 }
@@ -102,11 +113,36 @@ export async function applyFirestoreSync({ tenantId, actorId, ops, allowedEntiti
       const sequence = await transaction.get(sequenceRef)
       let profileRef = null
       let profileSnapshot = null
+      let profile = null
+      let staffRecord = null
       let roleRows = []
       const targetStaffId = entity === 'staff' ? recordId : entity === 'staff_roles' ? String(operation.payload.staffId || '') : ''
       if (targetStaffId) {
         profileRef = db.collection('staffProfiles').doc(targetStaffId)
         profileSnapshot = await transaction.get(profileRef)
+        if (profileSnapshot.exists) {
+          profile = profileSnapshot.data()
+          staffRecord = profile
+        } else if (entity === 'staff' && operation.op === 'create' && operation.payload.hospitalId === tenantId) {
+          // Offline staff records have a local ID, which is not a Firebase Auth
+          // UID. Sync the tenant record without inventing an auth profile.
+          staffRecord = {
+            ...sanitizeSyncPayload(operation.payload),
+            id: targetStaffId,
+            tenantId,
+            active: operation.payload.active !== false,
+          }
+        } else {
+          // Some server records predate staffProfiles, or are staff rows that
+          // have not been provisioned for Firebase Auth. Reuse tenant data.
+          const legacyStaff = await transaction.get(root.collection('records').doc(`staff__${targetStaffId}`))
+          const legacy = legacyStaff.data()
+          if (legacyStaff.exists && !legacy.deleted && legacy.tenantId === tenantId && legacy.payload?.hospitalId === tenantId) {
+            staffRecord = { ...sanitizeSyncPayload(legacy.payload), id: targetStaffId, tenantId }
+          }
+        }
+        if (profile && profile.tenantId !== tenantId) profile = null
+        if (staffRecord && staffRecord.tenantId !== tenantId) staffRecord = null
         if (entity === 'staff_roles') {
           const rolesQuery = root.collection('records').where('entity', '==', 'staff_roles')
           const rolesSnapshot = await transaction.get(rolesQuery)
@@ -116,13 +152,12 @@ export async function applyFirestoreSync({ tenantId, actorId, ops, allowedEntiti
           if (operation.op !== 'delete' && operation.payload.staffId === targetStaffId) roleRows.push(operation.payload)
         }
       }
-      if (targetStaffId && (!profileSnapshot?.exists || profileSnapshot.data()?.tenantId !== tenantId)) return { rejected: { code: 'not_found', message: 'Staff account does not exist in this hospital', retryable: false } }
+      if (targetStaffId && !staffRecord) return { rejected: { code: 'not_found', message: 'Staff record could not be found in this hospital', retryable: false } }
       const nextSequence = Number(sequence.data()?.lastSequence || 0) + 1
       const action = operation.op
       const payload = { ...sanitizeSyncPayload(operation.payload || {}), id: recordId, hospitalId: tenantId, ...(entity === 'audit_log' ? { actorId } : {}), updatedAt: timestamp() }
       transaction.set(recordRef, { tenantId, entity, recordId, payload, deleted: action === 'delete', updatedAt: timestamp() })
-      if (targetStaffId && profileSnapshot?.exists) {
-        const profile = profileSnapshot.data()
+      if (targetStaffId && staffRecord) {
         const updates = entity === 'staff'
           ? {
               ...(action === 'delete' ? { active: false } : {}),
@@ -135,8 +170,8 @@ export async function applyFirestoreSync({ tenantId, actorId, ops, allowedEntiti
               ...(Array.isArray(payload.permDenies) ? { permDenies: payload.permDenies } : {}),
             }
           : { roles: [...new Set(roleRows.filter((row) => row?.staffId === targetStaffId && typeof row.role === 'string').map((row) => row.role))] }
-        const nextProfile = { ...profile, ...updates, updatedAt: timestamp() }
-        transaction.set(profileRef, nextProfile)
+        const nextProfile = { ...staffRecord, ...updates, updatedAt: timestamp() }
+        if (profileSnapshot?.exists && profile) transaction.set(profileRef, nextProfile)
         transaction.set(root.collection('staff').doc(targetStaffId), nextProfile, { merge: true })
       }
       transaction.set(sequenceRef, { lastSequence: nextSequence, updatedAt: timestamp() }, { merge: true })

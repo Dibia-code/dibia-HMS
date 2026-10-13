@@ -5,14 +5,17 @@
 // the router. Bump DB_VERSION and add an upgrade branch in db.js when changing.
 
 export const DB_NAME = 'dibia'
-export const DB_VERSION = 4
+export const DB_VERSION = 6
 
 // name → { keyPath, autoIncrement?, indexes: [{ name, keyPath, unique? }] }
 export const STORES = {
   // The tenants themselves. Slug is the /:hospitalSlug in the URL.
   hospitals: {
     keyPath: 'id',
-    indexes: [{ name: 'by_slug', keyPath: 'slug', unique: true }],
+    // Existing offline databases can contain duplicate legacy/demo slugs.
+    // Tenant slug uniqueness is enforced by the backend; keeping this local
+    // lookup index non-unique lets upgrades preserve those cached records.
+    indexes: [{ name: 'by_slug', keyPath: 'slug' }],
   },
   branches: {
     keyPath: 'id',
@@ -23,7 +26,7 @@ export const STORES = {
     keyPath: 'id',
     indexes: [
       { name: 'by_hospital', keyPath: 'hospitalId' },
-      { name: 'by_email', keyPath: 'email', unique: true },
+      { name: 'by_email', keyPath: 'email' },
     ],
   },
   // The many-to-many join: one row per (staff, role). Matches the chip picker.
@@ -105,7 +108,7 @@ export const STORES = {
     keyPath: 'id',
     indexes: [
       { name: 'by_hospital', keyPath: 'hospitalId' },
-      { name: 'by_dibia_id', keyPath: 'dibiaId', unique: true },
+      { name: 'by_dibia_id', keyPath: 'dibiaId' },
     ],
   },
   visits: {
@@ -154,7 +157,7 @@ export const STORES = {
     keyPath: 'id',
     indexes: [
       { name: 'by_hospital', keyPath: 'hospitalId' },
-      { name: 'by_token', keyPath: 'token', unique: true },
+      { name: 'by_token', keyPath: 'token' },
     ],
   },
   hmo_claims: {
@@ -181,7 +184,7 @@ export const STORES = {
     autoIncrement: true,
     indexes: [
       { name: 'by_status', keyPath: 'status' },
-      { name: 'by_opId', keyPath: 'opId', unique: true },
+      { name: 'by_opId', keyPath: 'opId' },
     ],
   },
   // Misc key/value: seed flag, cached session, last-sync timestamp.
