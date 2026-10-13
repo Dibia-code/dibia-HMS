@@ -44,6 +44,7 @@ export function SyncBanner() {
     return (
       <div className="banner fail" role="alert">
         <Icon name="alert" />
+        {state.lastError && <div className="msg">{state.lastError}</div>}
         <button type="button" className="retry" onClick={() => engine.drain()}>
           Sync failed — tap to retry.
         </button>

@@ -5,6 +5,7 @@ import { useBaseRepo } from '@/data/RepositoryContext'
 import { ROLE } from '@/auth/roles'
 import { defaultHospitalConfig } from '@/lib/hospital'
 import { hashPin } from '@/lib/pin'
+import { apiBase } from '@/lib/apiBase'
 import { Button, Field, FormGrid, Input, useToast } from '@/components'
 import { Icon } from '@/components/Icon'
 import LegalFooter from '@/components/LegalFooter'
@@ -12,7 +13,6 @@ import LegalFooter from '@/components/LegalFooter'
 const slugify = (s) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
 const backendAuthEnabled = () => import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
-const apiBase = () => import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:4000' : '/api')
 const minPasswordLength = import.meta.env.PROD ? 12 : 8
 
 // Backend registrations wait for Dibia approval before hospital sign-in.

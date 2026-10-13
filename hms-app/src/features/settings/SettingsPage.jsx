@@ -3,10 +3,11 @@ import { useAuth } from '@/auth/AuthContext'
 import { PERM } from '@/auth/permissions'
 import { useRepo } from '@/data/RepositoryContext'
 import { useLiveQuery } from '@/hooks/useLiveQuery'
-import { useToast, usePageHeader, Card, CardHead, SectionLabel, Button, Switch, Field, Input, Icon } from '@/components'
+import { useToast, usePageHeader, Card, CardHead, SectionLabel, Button, Switch, Field, Input, Select, Icon } from '@/components'
 import { naira, formatDateTime } from '@/lib/format'
 import BillingSettings from './BillingSettings'
 import HospitalSettings from './HospitalSettings'
+import { connectScanner, connectUsb, disconnectHardware, getHardwareConfig, openCashDrawer, printBarcodeLabels, printReceiptToUsb, restoreHardwareConnections, setLabelProtocol } from '@/lib/hardware'
 
 const TABS = [
   { key: 'billing', label: 'Billing' },
@@ -55,7 +56,6 @@ export default function SettingsPage() {
 
   const [tab, setTab] = useState('hardware')
 
-  const [connected, setConnected] = useState({ scanner: true }) // scanner pairs by default
   // Each flag shows/hides that block on the printed receipt — the toggle model
   // carried over from the original design, extended with the new fields.
   const [receipt, setReceipt] = useState({
@@ -72,6 +72,9 @@ export default function SettingsPage() {
   const [vatRate, setVatRate] = useState('7.5')
   const [pay, setPay] = useState({ cash: true, transfer: true, credit: true })
   const [sampleMethod, setSampleMethod] = useState('cash')
+  const [hardware, setHardware] = useState(() => ({ ...getHardwareConfig(), connected: {} }))
+  const [hardwareBusy, setHardwareBusy] = useState('')
+  const [labelProtocol, setLabelProtocolState] = useState(() => getHardwareConfig().labelProtocol || 'TSPL')
 
   const { data: products } = useLiveQuery(() => repo.list('products'), [repo])
   const { data: hospitals } = useLiveQuery(() => repo.list('hospitals'), [repo])
@@ -106,14 +109,19 @@ export default function SettingsPage() {
   const setBizField = (k, v) => setBiz({ ...bizView, [k]: v })
 
   usePageHeader({ title: 'Settings', subtitle: 'Devices, receipts & configuration' }, [])
+  useEffect(() => { restoreHardwareConnections().then(setHardware).catch(() => {}) }, [])
 
-  const toggleDevice = (key, name) => {
-    setConnected((c) => {
-      const next = { ...c, [key]: !c[key] }
-      toast.success(`${name} ${next[key] ? 'connected' : 'disconnected'}`)
-      return next
-    })
+  const runHardwareAction = async (key, action, success) => {
+    setHardwareBusy(key)
+    try {
+      await action()
+      setHardware(await restoreHardwareConnections())
+      if (success) toast.success(success)
+    } catch (error) { toast.error(error?.message || 'Could not use the selected device.') }
+    finally { setHardwareBusy('') }
   }
+  const connectDevice = (key) => runHardwareAction(key, () => key === 'scanner' ? connectScanner() : connectUsb(key), `${DEVICES.find((device) => device.key === key)?.name} connected`)
+  const disconnectDevice = (key) => runHardwareAction(key, () => disconnectHardware(key), `${DEVICES.find((device) => device.key === key)?.name} disconnected`)
 
   // ---- receipt preview maths ----
   const rate = Number(vatRate) || 0
@@ -125,12 +133,14 @@ export default function SettingsPage() {
   const activeMethod = pay[sampleMethod] ? sampleMethod : (METHODS.find((m) => pay[m.key])?.key || 'cash')
   const now = new Date()
 
+  const receiptText = () => [bizView.name || 'Your Hospital', bizView.address, bizView.phone, bizView.email, '', 'Receipt: SALE-7F3K9', `Date: ${formatDateTime(now)}`, `Served by: ${user?.name || 'Cashier'}`, '', ...SAMPLE_ITEMS.map((it) => `${it.name} x${it.qty}  ${naira(it.qty * it.price)}`), '', `Subtotal: ${naira(subtotal)}`, ...(receipt.vat ? [`VAT (${rate}%): ${naira(vatAmt)}`] : []), `TOTAL: ${naira(total)}`, `Payment: ${METHOD_LABEL[activeMethod]}`, ...(activeMethod === 'cash' && receipt.tendered ? [`Tendered: ${naira(tendered)}`, `Change: ${naira(change)}`] : []), '', footer].filter((line) => line !== null && line !== undefined).join('\n')
   const printTest = () => {
-    if (!connected.printer) {
-      toast.error('Connect a receipt printer first (Hardware tab)')
+    if (hardware.connected?.printer || getHardwareConfig().printer) {
+      runHardwareAction('printer', () => printReceiptToUsb(receiptText()), 'Test receipt sent to receipt printer')
       return
     }
-    toast.success('Test receipt sent to the printer')
+    setTab('receipt')
+    window.setTimeout(() => window.print(), 100)
   }
 
   return (
@@ -148,26 +158,30 @@ export default function SettingsPage() {
 
       {tab === 'hardware' && (
         <Card>
-          <CardHead title="Connected devices" />
+          <CardHead title="Connect hardware" />
+          <div className="text-muted" style={{ marginBottom: 14 }}>Connect devices attached to this computer. Choose Connect, select the device in the browser prompt, and approve access.</div>
           <div className="hw-grid">
             {DEVICES.map((d) => {
-              const on = !!connected[d.key]
+              const connected = d.key === 'drawer' ? !!hardware.connected?.printer : !!hardware.connected?.[d.key]
+              const detail = d.key === 'drawer' ? 'Cash drawers normally connect to the receipt printer. Connect that printer, then send the drawer command.' : d.key === 'scanner' ? 'Connect a supported USB HID scanner. Keyboard-wedge scanners also work in focused scan fields.' : d.key === 'printer' ? 'Select a USB receipt printer. The printer must expose a browser-accessible print interface.' : 'Select a compatible USB label printer. Supported command sets: TSPL, ZPL, and ESC/POS.'
               return (
                 <div key={d.key} className="hw-card">
                   <div className="hw-top">
                     <span className="hw-icon"><Icon name={d.icon} size={20} /></span>
                     <span className="hw-name">{d.name}</span>
                   </div>
-                  <div className="hw-sub">{d.sub}</div>
+                  <div className="hw-sub">{detail}</div>
                   <div className="row-between">
-                    <span className="row-status" style={{ color: on ? 'var(--confirmed)' : 'var(--muted-3)' }}>
-                      <span className="dot" style={{ background: on ? 'var(--confirmed)' : 'var(--muted-4)' }} />
-                      {on ? 'Connected' : 'Not connected'}
+                    <span className="row-status" style={{ color: connected ? 'var(--confirmed)' : 'var(--muted-3)' }}>
+                      <span className="dot" style={{ background: connected ? 'var(--confirmed)' : 'var(--muted-4)' }} />
+                      {connected ? `Connected${hardware[d.key]?.name ? ` · ${hardware[d.key].name}` : ''}` : 'Not connected'}
                     </span>
-                    <Button variant={on ? 'quiet' : 'ghost'} size="sm" onClick={() => toggleDevice(d.key, d.name)}>
-                      {on ? 'Disconnect' : 'Connect'}
-                    </Button>
+                    {d.key === 'drawer'
+                      ? <Button size="sm" variant="ghost" disabled={!connected || !!hardwareBusy} onClick={() => runHardwareAction('drawer', openCashDrawer, 'Cash drawer command sent')}>Open drawer</Button>
+                      : <Button size="sm" variant={connected ? 'ghost' : 'primary'} disabled={!!hardwareBusy} onClick={() => connected ? disconnectDevice(d.key) : connectDevice(d.key)}>{hardwareBusy === d.key ? 'Working…' : connected ? 'Disconnect' : 'Connect'}</Button>}
                   </div>
+                  {d.key === 'printer' && connected && <Button className="mt-2" size="sm" variant="ghost" icon="printer" disabled={!!hardwareBusy} onClick={printTest}>Print test</Button>}
+                  {d.key === 'label' && <Field className="mt-2" label="Printer command language" htmlFor="label-protocol"><Select id="label-protocol" value={labelProtocol} onChange={(e) => { setLabelProtocolState(e.target.value); setLabelProtocol(e.target.value) }}><option value="TSPL">TSPL</option><option value="ZPL">ZPL</option><option value="ESC/POS">ESC/POS</option></Select></Field>}
                 </div>
               )
             })}
@@ -178,15 +192,9 @@ export default function SettingsPage() {
       {tab === 'barcode' && (
         <Card className="field-wide">
           <SectionLabel>Barcode labels</SectionLabel>
-          <div style={{ fontSize: 12.5, color: 'var(--muted-3)', marginBottom: 14 }}>
-             Print shelf and product labels for scanning at the till. Labels use the product&apos;s saved barcode.
-          </div>
-          <div className="receipt-preview" style={{ textAlign: 'center', marginBottom: 14 }}>
-            <div style={{ fontWeight: 700 }}>Paracetamol 500mg</div>
-            <div style={{ fontFamily: 'monospace', letterSpacing: 4, fontSize: 22, margin: '6px 0' }}>▏▍▏▎▍▏▎▏▍▎▏</div>
-            <div style={{ fontFamily: 'monospace' }}>6001234500042</div>
-          </div>
-          <Button variant="ghost" icon="printer" onClick={() => toast.success('Sent labels to the label printer')}>Print labels</Button>
+          <div style={{ fontSize: 12.5, color: 'var(--muted-3)', marginBottom: 14 }}>Print machine-readable labels for inventory products with a barcode. Connect a compatible label printer under Hardware first.</div>
+          <div className="text-muted">{(products || []).filter((product) => product.barcode).length} products with barcodes available.</div>
+          <Button className="mt-2" variant="primary" icon="printer" disabled={!!hardwareBusy} onClick={() => runHardwareAction('label', () => printBarcodeLabels((products || []).filter((product) => product.barcode), labelProtocol), 'Barcode labels sent to label printer')}>Print product labels</Button>
         </Card>
       )}
 
@@ -285,7 +293,7 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            <div className="receipt-preview">
+            <div className="receipt-preview" id="receipt-print">
               {receipt.logo && <div className="rc" style={{ fontWeight: 700 }}>{bizView.name || 'Your Hospital'}</div>}
               {receipt.address && bizView.address && <div className="rc">{bizView.address}</div>}
               {receipt.contact && (bizView.phone || bizView.email) && (

@@ -20,6 +20,16 @@ export default function HospitalsPage() {
   const moduleCatalog = list.find((hospital) => hospital.moduleCatalog?.length)?.moduleCatalog || DEMO_MODULES
   const [messageHospital, setMessageHospital] = useState('')
   const [messageText, setMessageText] = useState('')
+  const [expandedHospitals, setExpandedHospitals] = useState(() => new Set())
+
+  function toggleHospitalExpanded(id) {
+    setExpandedHospitals((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   async function changeTier(p, tier) {
     await repo.update('hospitals', p.id, { plan: tier })
@@ -101,65 +111,45 @@ export default function HospitalsPage() {
       </div>
 
       <SectionLabel>All registered hospitals ({number(registered.length)})</SectionLabel>
-      <DataTable
-        columns={[
-          {
-            key: 'name', header: 'Hospital',
-            render: (p) => (
-              <>
-                <div className="tenant-name">{p.name}</div>
-                <div className="tenant-sub">{p.location}</div>
-              </>
-            ),
-          },
-          { key: 'branches', header: 'Branches' },
-          { key: 'staff', header: 'Staff' },
-          {
-            key: 'modules', header: 'Enabled modules',
-            render: (p) => <div><Button variant="secondary" onClick={() => toggleAllModules(p)}>{moduleCatalog.length > 0 && moduleCatalog.every((module) => p.modules?.includes(module.code)) ? 'Lock all' : 'Grant Pro access'}</Button><div className="module-checks">{moduleCatalog.map((module) => <label key={module.code}><input type="checkbox" checked={(Array.isArray(p.modules) ? p.modules : []).includes(module.code)} onChange={() => toggleModule(p, module)} />{module.name}</label>)}</div></div>,
-          },
-          {
-            key: 'usage', header: 'Usage-days this month',
-            render: (p) => {
-              const u = usageLevel(p)
-              return (
-                <span className="row" style={{ gap: 8 }}>
-                  <span className="tabular">{number(u.days)}{u.tier.max === Infinity ? '' : ` of ${number(u.tier.max)}`}</span>
-                  {u.level !== 'ok' && <Pill tone={u.level === 'crit' ? 'failed' : 'pending'}>{u.level === 'crit' ? 'Over ceiling' : 'Near ceiling'}</Pill>}
-                </span>
-              )
-            },
-          },
-          {
-            key: 'plan', header: 'Tier',
-            render: (p) => (
-              <select className="tier-select" aria-label={`Tier for ${p.name}`} value={normalisePlan(p.plan)} onChange={(e) => changeTier(p, e.target.value)}>
-                {TIERS.map((t) => <option key={t.key} value={t.key}>{t.key}</option>)}
-              </select>
-            ),
-          },
-          {
-            key: 'status', header: 'Status',
-            render: (p) => {
-              const s = hospitalStatusPill(p.status)
-              return <Pill tone={s.tone}>{s.label}</Pill>
-            },
-          },
-          {
-            header: 'Actions',
-            render: (p) => (
-              <div className="action-btns">
-                <Button variant="secondary" onClick={() => toggleSuspend(p)}>
-                  {p.status === 'suspended' ? 'Reactivate' : 'Suspend'}
-                </Button>
+      <div className="hospital-accordion">
+        {registered.length === 0 ? <div className="empty-row">No hospitals registered yet</div> : registered.map((p) => {
+          const expanded = expandedHospitals.has(p.id)
+          const usage = usageLevel(p)
+          const status = hospitalStatusPill(p.status)
+          const allGranted = moduleCatalog.length > 0 && moduleCatalog.every((module) => p.modules?.includes(module.code))
+          return (
+            <section className="hospital-accordion-item" key={p.id}>
+              <div className="hospital-accordion-heading">
+                <button
+                  type="button"
+                  className="hospital-expand-toggle"
+                  aria-label={`${expanded ? 'Collapse' : 'Expand'} ${p.name}`}
+                  aria-expanded={expanded}
+                  onClick={() => toggleHospitalExpanded(p.id)}
+                >{expanded ? '⌃' : '⌄'}</button>
+                <div className="hospital-accordion-name">
+                  <div className="tenant-name">{p.name}</div>
+                  {expanded && <div className="tenant-sub">{p.location}</div>}
+                </div>
               </div>
-            ),
-          },
-        ]}
-        rows={registered}
-        getRowKey={(p) => p.id}
-        empty="No hospitals registered yet"
-      />
+              {expanded && (
+                <div className="hospital-accordion-details">
+                  <div className="hospital-detail"><span>Branches</span><strong>{p.branches ?? 0}</strong></div>
+                  <div className="hospital-detail"><span>Staff</span><strong>{p.staff ?? 0}</strong></div>
+                  <div className="hospital-detail"><span>Usage-days this month</span><strong>{number(usage.days)}{usage.tier.max === Infinity ? '' : ` of ${number(usage.tier.max)}`}</strong>{usage.level !== 'ok' && <Pill tone={usage.level === 'crit' ? 'failed' : 'pending'}>{usage.level === 'crit' ? 'Over ceiling' : 'Near ceiling'}</Pill>}</div>
+                  <div className="hospital-detail"><span>Status</span><Pill tone={status.tone}>{status.label}</Pill></div>
+                  <div className="hospital-detail"><span>Tier</span><select className="tier-select" aria-label={`Tier for ${p.name}`} value={normalisePlan(p.plan)} onChange={(e) => changeTier(p, e.target.value)}>{TIERS.map((t) => <option key={t.key} value={t.key}>{t.key}</option>)}</select></div>
+                  <div className="hospital-detail hospital-detail-action"><span>Account action</span><Button variant="secondary" onClick={() => toggleSuspend(p)}>{p.status === 'suspended' ? 'Reactivate' : 'Suspend'}</Button></div>
+                  <div className="hospital-modules-section">
+                    <div className="hospital-modules-heading"><strong>Enabled modules</strong><Button variant="secondary" onClick={() => toggleAllModules(p)}>{allGranted ? 'Lock all' : 'Grant Pro access'}</Button></div>
+                    <div className="hospital-module-checks">{moduleCatalog.map((module) => <label key={module.code}><input type="checkbox" checked={(Array.isArray(p.modules) ? p.modules : []).includes(module.code)} onChange={() => toggleModule(p, module)} />{module.name}</label>)}</div>
+                  </div>
+                </div>
+              )}
+            </section>
+          )
+        })}
+      </div>
       <Card className="mt-3">
         <SectionLabel>Send a message to a facility</SectionLabel>
         <form onSubmit={sendMessage} className="facility-message">

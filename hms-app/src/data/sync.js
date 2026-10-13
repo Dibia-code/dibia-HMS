@@ -16,6 +16,7 @@ export class SyncEngine {
     this.lastSyncAt = null
     this.lastError = null
     this.pending = 0
+    this.otherPending = 0
     this._listeners = new Set()
     this._timer = null
     this._onOnline = () => this.drain()
@@ -46,6 +47,7 @@ export class SyncEngine {
       configured: this.remote.configured !== false,
       syncing: this.syncing,
       pending: this.pending,
+      otherPending: this.otherPending,
       lastSyncAt: this.lastSyncAt,
       lastError: this.lastError,
     }
@@ -59,7 +61,22 @@ export class SyncEngine {
 
   async refreshPending() {
     const db = await getDB()
-    this.pending = await db.count('outbox')
+    const queue = await db.getAll('outbox')
+    const tenantId = this.remote.configured ? this.remote.hospitalId : null
+    if (!tenantId) {
+      this.pending = queue.length
+      this.otherPending = 0
+    } else {
+      const staffIds = new Set((await db.getAll('staff')).filter((staff) => staff.hospitalId === tenantId).map((staff) => staff.id))
+      const belongsToTenant = (entry) => {
+        const payload = entry.payload || {}
+        return payload.hospitalId === tenantId || entry.tenantId === tenantId ||
+          (entry.entity === 'hospitals' && entry.recordId === tenantId) ||
+          (entry.entity === 'staff_roles' && staffIds.has(payload.staffId))
+      }
+      this.pending = queue.filter(belongsToTenant).length
+      this.otherPending = queue.length - this.pending
+    }
     this._emit()
     return this.pending
   }
@@ -138,10 +155,13 @@ export class SyncEngine {
       while (queue.length && tenantId) {
         const eligible = queue.filter((entry) => {
           const payload = entry.payload || {}
-          if (payload.hospitalId === tenantId) return true
+          if (payload.hospitalId === tenantId || entry.tenantId === tenantId) return true
           if (entry.entity === 'hospitals' && entry.recordId === tenantId) return true
           return entry.entity === 'staff_roles' && staffIds.has(payload.staffId)
         })
+        // The IndexedDB outbox is shared by accounts used on this computer.
+        // Keep other-tenant or unassigned entries intact for their owner, but
+        // never let them block sync for the currently signed-in hospital.
         if (!eligible.length) break
         const batch = eligible.slice(0, BATCH_SIZE)
         const ops = batch.map((e) => ({
@@ -166,7 +186,7 @@ export class SyncEngine {
 
         const processed = new Set(batch.map((entry) => entry.opId))
         queue = queue.filter((entry) => !processed.has(entry.opId))
-        this.pending = await db.count('outbox')
+        await this.refreshPending()
         this._emit()
       }
 

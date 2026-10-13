@@ -294,8 +294,8 @@ export default function InventoryPage() {
     return list
   }, [items, query, tab])
 
-  function onScan() {
-    const q = query.trim()
+  function onScan(scannedValue) {
+    const q = String(scannedValue ?? query).trim()
     const hit = items.find(({ product: p }) => p.barcode === q || p.name.toLowerCase() === q.toLowerCase())
     if (hit) setOpenId(hit.product.id)
     else toast.error('No product matches that barcode')

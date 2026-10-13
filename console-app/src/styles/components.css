@@ -212,7 +212,27 @@ table.t td.empty { text-align: center; color: var(--muted-3); padding: 22px 14px
 .tier-select { min-height: 44px; min-width: 130px; padding: 0 12px; border: 1px solid var(--hairline); border-radius: var(--r-input); background: var(--input-bg); color: var(--slate); font-size: 14px; font-family: var(--font-ui); }
 .module-checks { display: grid; grid-template-columns: repeat(2, minmax(100px, 1fr)); gap: 5px 10px; min-width: 230px; }
 .module-checks label { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.hospital-accordion { display: grid; gap: 10px; }
+.hospital-accordion-item { overflow: hidden; border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--surface); }
+.hospital-accordion-heading { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 10px 16px; }
+.hospital-expand-toggle { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border: 1px solid var(--hairline); border-radius: 8px; background: var(--surface); color: var(--slate); font: 700 23px/1 var(--font-ui); cursor: pointer; }
+.hospital-expand-toggle:hover { background: var(--row-hover); }
+.hospital-accordion-name { min-width: 0; }
+.hospital-accordion-details { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 20px; padding: 18px 20px 20px 64px; border-top: 1px solid var(--hairline); }
+.hospital-detail { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.hospital-detail > span:first-child { color: var(--muted-2); font-size: 12px; }
+.hospital-detail strong { font-size: 14px; }
+.hospital-detail-action { align-items: center; }
+.hospital-modules-section { grid-column: 1 / -1; min-width: 0; padding-top: 14px; border-top: 1px solid var(--hairline); }
+.hospital-modules-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.hospital-module-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 20px; }
+.hospital-module-checks label { display: flex; align-items: flex-start; gap: 8px; min-width: 0; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.hospital-module-checks input { margin: 2px 0 0; flex: 0 0 auto; }
 .facility-message { display: grid; grid-template-columns: minmax(190px, 1fr) 2fr auto; align-items: start; gap: 12px; }
 .facility-message textarea, .ticket-actions textarea { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--hairline); border-radius: var(--r-input); background: var(--input-bg); color: var(--slate); font: inherit; resize: vertical; }
 .ticket-actions { display: grid; min-width: 230px; gap: 6px; }
-@media (max-width: 640px) { .facility-message { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .facility-message { grid-template-columns: 1fr; }
+  .hospital-accordion-details { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; }
+  .hospital-module-checks { grid-template-columns: 1fr; }
+}

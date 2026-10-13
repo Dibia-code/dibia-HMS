@@ -2,6 +2,7 @@ import { Button, Modal, useToast } from '@/components'
 import { METHOD_LABEL } from '@/lib/billing'
 import { naira, formatDateTime } from '@/lib/format'
 import { hospitalConfig } from '@/lib/hospital'
+import { getHardwareConfig, printReceiptToUsb } from '@/lib/hardware'
 
 export function ReceiptView({ payment, hospital, onClose, onDone, doneLabel }) {
   const cfg = hospitalConfig(hospital).receipt
@@ -43,6 +44,19 @@ export function ReceiptView({ payment, hospital, onClose, onDone, doneLabel }) {
     }
   }
 
+  async function print() {
+    if (!getHardwareConfig().printer) {
+      window.print()
+      return
+    }
+    try {
+      await printReceiptToUsb(asText())
+      toast.success('Receipt sent to the connected printer')
+    } catch (error) {
+      toast.error(error?.message || 'Could not print to the connected printer')
+    }
+  }
+
   return (
     <Modal
       wide
@@ -50,7 +64,7 @@ export function ReceiptView({ payment, hospital, onClose, onDone, doneLabel }) {
       onClose={onClose}
       actions={
         <>
-          <Button variant="ghost" icon="printer" onClick={() => window.print()}>Print</Button>
+          <Button variant="ghost" icon="printer" onClick={print}>Print</Button>
           <Button variant="ghost" onClick={share}>Share or copy</Button>
           {onDone ? (
             <Button variant="primary" onClick={onDone}>{doneLabel || 'Done'}</Button>

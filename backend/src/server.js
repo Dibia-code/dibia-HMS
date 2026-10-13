@@ -566,6 +566,42 @@ function recordAudit(tenantId, actorId, action, entity = null, recordId = null, 
   db.prepare('INSERT INTO audit_log (id, tenant_id, actor_id, action, entity, record_id, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id('audit'), tenantId, actorId, action, entity, recordId, json(metadata), now())
 }
 
+function ensureSqliteTenantSnapshot(tenantId) {
+  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenantId)
+  if (!tenant) return
+  const branches = db.prepare('SELECT * FROM branches WHERE tenant_id = ?').all(tenantId)
+  const staffRows = db.prepare('SELECT * FROM staff WHERE tenant_id = ?').all(tenantId)
+  const records = [
+    { entity: 'hospitals', recordId: tenantId, payload: { id: tenantId, hospitalId: tenantId, slug: tenant.slug, name: tenant.name, address: tenant.address || '', phone: tenant.phone || '', status: tenant.status, createdAt: tenant.created_at } },
+    ...branches.map((branch) => ({ entity: 'branches', recordId: branch.id, payload: { id: branch.id, hospitalId: tenantId, branchId: branch.id, name: branch.name, address: branch.address || '', isMain: branch.name === 'Main Branch', createdAt: branch.created_at } })),
+    ...staffRows.flatMap((staff) => {
+      const roles = parse(staff.roles_json, [])
+      return [
+        { entity: 'staff', recordId: staff.id, payload: { id: staff.id, hospitalId: tenantId, branchId: staff.branch_id || null, name: staff.name, email: staff.email, phone: staff.phone || '', profession: staff.profession || '', active: !!staff.active, createdAt: staff.created_at } },
+        ...roles.map((role) => ({ entity: 'staff_roles', recordId: `${staff.id}__${role}`, payload: { id: `${staff.id}__${role}`, hospitalId: tenantId, staffId: staff.id, role } })),
+      ]
+    }),
+  ]
+  const insertRecord = db.prepare('INSERT OR IGNORE INTO records (tenant_id, entity, record_id, payload_json, deleted, updated_at) VALUES (?, ?, ?, ?, 0, ?)')
+  const insertChange = db.prepare('INSERT INTO sync_changes (tenant_id, entity, record_id, operation, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+  const timestamp = now()
+  db.transaction(() => {
+    for (const record of records) {
+      const result = insertRecord.run(tenantId, record.entity, record.recordId, json(record.payload), timestamp)
+      if (result.changes) insertChange.run(tenantId, record.entity, record.recordId, 'create', json(record.payload), timestamp)
+    }
+    const hospitalRecord = db.prepare("SELECT payload_json FROM records WHERE tenant_id = ? AND entity = 'hospitals' AND record_id = ?").get(tenantId, tenantId)
+    if (hospitalRecord) {
+      const current = parse(hospitalRecord.payload_json, {})
+      if (current.status !== tenant.status) {
+        const payload = { ...current, status: tenant.status }
+        db.prepare("UPDATE records SET payload_json = ?, updated_at = ? WHERE tenant_id = ? AND entity = 'hospitals' AND record_id = ?").run(json(payload), timestamp, tenantId, tenantId)
+        insertChange.run(tenantId, 'hospitals', tenantId, 'update', json(payload), timestamp)
+      }
+    }
+  })()
+}
+
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'dibia-hms-backend', time: now(), dataStore: process.env.DATA_STORE || 'sqlite', firestore: firestoreStatus() }))
 
 app.post('/auth/register', limitAuthAttempts, asyncRoute(async (req, res) => {
@@ -591,6 +627,16 @@ app.post('/auth/register', limitAuthAttempts, asyncRoute(async (req, res) => {
       db.prepare('INSERT INTO tenants (id, slug, name, address, phone, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(tenantId, slug, hospitalName, address, phone, 'pending', timestamp)
       db.prepare('INSERT INTO branches (id, tenant_id, name, address, created_at) VALUES (?, ?, ?, ?, ?)').run(branchId, tenantId, 'Main Branch', address, timestamp)
       db.prepare('INSERT INTO staff (id, tenant_id, branch_id, name, email, phone, profession, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(staffId, tenantId, branchId, ownerName, email, phone, 'Hospital administrator', bcrypt.hashSync(password, 12), json(roles), timestamp, timestamp)
+      const initialRecords = [
+        { entity: 'hospitals', recordId: tenantId, payload: { id: tenantId, hospitalId: tenantId, slug, name: hospitalName, address, phone, email, status: 'pending', createdAt: timestamp } },
+        { entity: 'branches', recordId: branchId, payload: { id: branchId, hospitalId: tenantId, branchId, name: 'Main Branch', address, isMain: true, createdAt: timestamp } },
+        { entity: 'staff', recordId: staffId, payload: { id: staffId, hospitalId: tenantId, branchId, name: ownerName, email, phone, profession: 'Hospital administrator', active: true, createdAt: timestamp } },
+        { entity: 'staff_roles', recordId: `${staffId}__facility_admin`, payload: { id: `${staffId}__facility_admin`, hospitalId: tenantId, staffId, role: 'facility_admin' } },
+      ]
+      for (const row of initialRecords) {
+        db.prepare('INSERT INTO records (tenant_id, entity, record_id, payload_json, deleted, updated_at) VALUES (?, ?, ?, ?, 0, ?)').run(tenantId, row.entity, row.recordId, json(row.payload), timestamp)
+        db.prepare('INSERT INTO sync_changes (tenant_id, entity, record_id, operation, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(tenantId, row.entity, row.recordId, 'create', json(row.payload), timestamp)
+      }
     })
     try { create() } catch (error) { return res.status(400).json({ message: production ? 'Could not create hospital account' : error.message || 'Could not create hospital account' }) }
     const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(staffId)
@@ -677,6 +723,7 @@ app.post('/auth/login', limitAuthAttempts, (req, res) => {
     code: tenant?.status === 'pending' ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE',
     message: tenant?.status === 'pending' ? 'Hospital registration is awaiting approval' : 'Hospital workspace is not active',
   })
+  ensureSqliteTenantSnapshot(tenant.id)
   const branch = staff.branch_id ? db.prepare('SELECT * FROM branches WHERE id = ?').get(staff.branch_id) : null
   const refreshToken = createRefreshSession(staff.id)
   setRefreshCookie(res, refreshToken)
@@ -1309,6 +1356,124 @@ const allowedEntities = new Set([
   'shift_reports', 'audit_log', 'complaints', 'hr_actions', 'staff_payments',
   'settings',
 ])
+
+async function findDeviceInvite(token) {
+  if (!token) return null
+  if (firestoreStatus().enabled) {
+    const matches = await getFirestoreStore().collectionGroup('records').where('entity', '==', 'devices').get()
+    const match = matches.docs.find((doc) => {
+      const row = doc.data()
+      return !row.deleted && row.payload?.token === token
+    })
+    if (!match) return null
+    const row = match.data()
+    return { tenantId: row.tenantId, recordId: row.recordId, payload: row.payload, ref: match.ref }
+  }
+  const rows = db.prepare("SELECT tenant_id, record_id, payload_json FROM records WHERE entity = 'devices' AND deleted = 0").all()
+  for (const row of rows) {
+    const payload = parse(row.payload_json, null)
+    if (payload?.token === token) return { tenantId: row.tenant_id, recordId: row.record_id, payload }
+  }
+  return null
+}
+
+async function saveDeviceInvite(tenantId, recordId, payload, operation = 'create') {
+  const timestamp = now()
+  if (firestoreStatus().enabled) {
+    const store = getFirestoreStore()
+    const tenantRef = store.collection('tenants').doc(tenantId)
+    const recordRef = tenantRef.collection('records').doc(`devices__${recordId}`)
+    await store.runTransaction(async (transaction) => {
+      const sequenceRef = tenantRef.collection('meta').doc('sync')
+      const sequence = await transaction.get(sequenceRef)
+      const currentSequence = Number(sequence.data()?.lastSequence || 0) + 1
+      transaction.set(recordRef, { tenantId, entity: 'devices', recordId, payload, deleted: false, updatedAt: timestamp })
+      transaction.set(sequenceRef, { lastSequence: currentSequence, updatedAt: timestamp }, { merge: true })
+      transaction.set(tenantRef.collection('syncChanges').doc(String(currentSequence)), {
+        sequence: currentSequence, entity: 'devices', recordId, operation, payload, createdAt: timestamp,
+      })
+    })
+    return
+  }
+  const transaction = db.transaction(() => {
+    db.prepare('INSERT INTO records (tenant_id, entity, record_id, payload_json, deleted, updated_at) VALUES (?, ?, ?, ?, 0, ?) ON CONFLICT(tenant_id, entity, record_id) DO UPDATE SET payload_json = excluded.payload_json, deleted = 0, updated_at = excluded.updated_at')
+      .run(tenantId, 'devices', recordId, json(payload), timestamp)
+    db.prepare('INSERT INTO sync_changes (tenant_id, entity, record_id, operation, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(tenantId, 'devices', recordId, operation, json(payload), timestamp)
+  })
+  transaction()
+}
+
+app.post('/devices/invite', auth, requireRole('facility_admin', 'ceo_owner', 'super_admin'), asyncRoute(async (req, res) => {
+  const recordId = String(req.body?.id || '').trim()
+  const name = String(req.body?.name || '').trim()
+  const token = String(req.body?.token || '').trim()
+  if (!recordId || !name || !/^[A-Za-z0-9_-]{20,100}$/.test(token)) return res.status(400).json({ message: 'A device name and valid access token are required' })
+  const existing = await findDeviceInvite(token)
+  if (existing) {
+    if (existing.tenantId === req.auth.tenantId && existing.recordId === recordId) return res.json({ device: existing.payload })
+    return res.status(409).json({ message: 'This device access token already exists' })
+  }
+  const device = { id: recordId, hospitalId: req.auth.tenantId, name, token, status: 'invited', createdBy: req.auth.sub, createdAt: now(), updatedAt: now() }
+  await saveDeviceInvite(req.auth.tenantId, recordId, device)
+  recordAudit(req.auth.tenantId, req.auth.sub, 'device.invited', 'device', recordId, { name })
+  return res.status(201).json({ device })
+}))
+
+app.get('/devices/join', asyncRoute(async (req, res) => {
+  const invite = await findDeviceInvite(String(req.query.token || ''))
+  if (!invite) return res.status(404).json({ message: 'Device access link not found' })
+  const tenant = firestoreStatus().enabled
+    ? (await getFirestoreStore().collection('tenants').doc(invite.tenantId).get()).data()
+    : db.prepare('SELECT status FROM tenants WHERE id = ?').get(invite.tenantId)
+  if (!tenant || tenant.status !== 'active') return res.status(403).json({ message: 'This hospital workspace is not active' })
+  return res.json({ device: invite.payload })
+}))
+
+app.post('/devices/join', asyncRoute(async (req, res) => {
+  const invite = await findDeviceInvite(String(req.body?.token || ''))
+  if (!invite) return res.status(404).json({ message: 'Device access link not found' })
+  const tenant = firestoreStatus().enabled
+    ? (await getFirestoreStore().collection('tenants').doc(invite.tenantId).get()).data()
+    : db.prepare('SELECT status FROM tenants WHERE id = ?').get(invite.tenantId)
+  if (!tenant || tenant.status !== 'active') return res.status(403).json({ message: 'This hospital workspace is not active' })
+  if (invite.payload.status !== 'invited' && invite.payload.status !== 'pending') return res.status(409).json({ message: 'This device invitation is no longer available' })
+  const payload = { ...invite.payload, status: 'pending', requestedName: String(req.body?.name || '').trim().slice(0, 100) || invite.payload.name, requestedAt: now(), updatedAt: now() }
+  await saveDeviceInvite(invite.tenantId, invite.recordId, payload, 'update')
+  return res.json({ device: payload })
+}))
+
+app.get('/devices', auth, requireRole('facility_admin', 'ceo_owner', 'super_admin'), asyncRoute(async (req, res) => {
+  let devices
+  if (firestoreStatus().enabled) {
+    const result = await getFirestoreStore().collection('tenants').doc(req.auth.tenantId).collection('records').where('entity', '==', 'devices').get()
+    devices = result.docs.filter((doc) => !doc.data().deleted).map((doc) => doc.data().payload).filter(Boolean)
+  } else {
+    devices = db.prepare("SELECT payload_json FROM records WHERE tenant_id = ? AND entity = 'devices' AND deleted = 0").all(req.auth.tenantId).map((row) => parse(row.payload_json, null)).filter(Boolean)
+  }
+  return res.json({ devices })
+}))
+
+app.patch('/devices/:deviceId', auth, requireRole('facility_admin', 'ceo_owner', 'super_admin'), asyncRoute(async (req, res) => {
+  const status = String(req.body?.status || '')
+  if (!['approved', 'rejected', 'revoked'].includes(status)) return res.status(400).json({ message: 'Invalid device status' })
+  let existing
+  if (firestoreStatus().enabled) {
+    const ref = getFirestoreStore().collection('tenants').doc(req.auth.tenantId).collection('records').doc(`devices__${req.params.deviceId}`)
+    const snapshot = await ref.get()
+    if (snapshot.exists && !snapshot.data().deleted) existing = snapshot.data().payload
+  } else {
+    const row = db.prepare("SELECT payload_json FROM records WHERE tenant_id = ? AND entity = 'devices' AND record_id = ? AND deleted = 0").get(req.auth.tenantId, req.params.deviceId)
+    existing = row ? parse(row.payload_json, null) : null
+  }
+  if (!existing) return res.status(404).json({ message: 'Device not found' })
+  const allowed = status === 'approved' ? existing.status === 'pending' : status === 'rejected' ? existing.status === 'pending' : existing.status === 'approved'
+  if (!allowed) return res.status(409).json({ message: `A device cannot move from ${existing.status} to ${status}` })
+  const payload = { ...existing, status, decidedBy: req.auth.sub, decidedAt: now(), updatedAt: now() }
+  await saveDeviceInvite(req.auth.tenantId, existing.id, payload, 'update')
+  recordAudit(req.auth.tenantId, req.auth.sub, `device.${status}`, 'device', existing.id, { before: { status: existing.status }, after: { status } })
+  return res.json({ device: payload })
+}))
 
 app.get('/sync/snapshot', auth, async (req, res) => {
   let pageState = null

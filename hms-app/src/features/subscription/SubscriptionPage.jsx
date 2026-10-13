@@ -3,6 +3,7 @@ import { useAuth } from '@/auth/AuthContext'
 import { useSyncEngine } from '@/data/RepositoryContext'
 import { usePageHeader, Card, CardHead, Pill } from '@/components'
 import { naira } from '@/lib/format'
+import { apiBase } from '@/lib/apiBase'
 
 export default function SubscriptionPage() {
   const { user } = useAuth()
@@ -12,7 +13,7 @@ export default function SubscriptionPage() {
   usePageHeader({ title: 'Modules and billing', subtitle: 'Module access is activated by Dibia after manual payment confirmation.' }, [])
 
   useEffect(() => {
-    const baseUrl = String(import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:4000' : '/api')).replace(/\/+$/, '')
+    const baseUrl = apiBase()
     const token = sync.remote?.accessToken
     if (!token) return
     let cancelled = false

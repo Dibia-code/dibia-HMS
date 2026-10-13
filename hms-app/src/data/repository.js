@@ -109,7 +109,10 @@ export class LocalRepository {
   }
 
   async remove(entity, id) {
-    await this._commit([{ entity, op: 'delete', record: { id } }])
+    const db = await getDB()
+    const existing = await db.get(entity, id)
+    const record = { ...(existing || {}), id, ...(existing?.hospitalId || !this.hospitalId ? {} : { hospitalId: this.hospitalId }) }
+    await this._commit([{ entity, op: 'delete', record }])
     return { id }
   }
 
@@ -209,7 +212,7 @@ export class LocalRepository {
     for (const row of current) {
       if (!wanted.has(row.role)) {
         await rolesStore.delete(row.id)
-        await this._enqueue(tx, { entity: 'staff_roles', op: 'delete', recordId: row.id, payload: { id: row.id } })
+        await this._enqueue(tx, { entity: 'staff_roles', op: 'delete', recordId: row.id, payload: { ...row, hospitalId: staff.hospitalId } })
       }
     }
     for (const slug of wanted) {
@@ -241,13 +244,14 @@ export class LocalRepository {
   async removeStaff(id) {
     const db = await getDB()
     const tx = db.transaction(['staff', 'staff_roles', 'outbox'], 'readwrite')
+    const staff = await tx.objectStore('staff').get(id)
     const rows = await tx.objectStore('staff_roles').index('by_staff').getAll(id)
     for (const row of rows) {
       await tx.objectStore('staff_roles').delete(row.id)
-      await this._enqueue(tx, { entity: 'staff_roles', op: 'delete', recordId: row.id, payload: { id: row.id } })
+      await this._enqueue(tx, { entity: 'staff_roles', op: 'delete', recordId: row.id, payload: { ...row, hospitalId: staff?.hospitalId || this.hospitalId } })
     }
     await tx.objectStore('staff').delete(id)
-    await this._enqueue(tx, { entity: 'staff', op: 'delete', recordId: id, payload: { id } })
+    await this._enqueue(tx, { entity: 'staff', op: 'delete', recordId: id, payload: { ...(staff || {}), id, hospitalId: staff?.hospitalId || this.hospitalId } })
     await tx.done
     emitChange(['staff', 'staff_roles'])
     return { id }
@@ -945,6 +949,7 @@ export class LocalRepository {
       op,
       recordId,
       payload,
+      tenantId: payload?.hospitalId || this.hospitalId || null,
       status: 'pending',
       tries: 0,
       createdAt: new Date().toISOString(),

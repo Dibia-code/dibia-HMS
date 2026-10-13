@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { useBaseRepo, useScope, useSyncEngine } from '@/data/RepositoryContext'
 import { dataBus } from '@/data/repository'
 import { hashPin } from '@/lib/pin'
+import { apiBase } from '@/lib/apiBase'
 import { permissionsFor, can as canDo, landingPath } from './permissions'
 
 // Production and backend-enabled development authenticate against the API.
@@ -10,8 +11,6 @@ import { permissionsFor, can as canDo, landingPath } from './permissions'
 const SESSION_KEY = 'dibia.session'
 const Ctx = createContext(null)
 const backendAuthEnabled = () => import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
-const apiBase = () => import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:4000' : '/api')
-
 function fromBackend(result) {
   const user = result?.user || {}
   return {
@@ -65,14 +64,32 @@ export function AuthProvider({ children }) {
   const [session, setSession] = useState(() => backendAuthEnabled() ? null : loadSession())
   const [restoring, setRestoring] = useState(true)
 
+  useEffect(() => {
+    const expireSession = () => {
+      sync.remote?.setAccessToken?.(null)
+      localStorage.removeItem(SESSION_KEY)
+      setSession(null)
+    }
+    window.addEventListener('dibia:session-expired', expireSession)
+    return () => window.removeEventListener('dibia:session-expired', expireSession)
+  }, [sync])
+
   // Restore an existing session's tenant scope on reload.
   useEffect(() => {
     if (backendAuthEnabled()) {
       let cancelled = false
-      fetch(`${apiBase()}/auth/refresh`, { method: 'POST', credentials: 'include' })
-        .then(async (response) => {
+      let refreshing = false
+      const restoreBackendSession = async () => {
+        if (cancelled || refreshing) return
+        refreshing = true
+        try {
+          const response = await fetch(`${apiBase()}/auth/refresh`, { method: 'POST', credentials: 'include' })
           const result = await response.json().catch(() => ({}))
-          if (!response.ok) throw new Error(result.message || 'No active backend session')
+          if (!response.ok) {
+            const error = new Error(result.message || 'No active backend session')
+            error.status = response.status
+            throw error
+          }
           if (cancelled) return
           const next = fromBackend(result)
           if (!next.userId || !next.hospitalId || !next.hospitalSlug) throw new Error('The server returned an incomplete hospital session')
@@ -82,16 +99,35 @@ export function AuthProvider({ children }) {
           setSession(next)
           setScope({ hospitalId: next.hospitalId, branchId: next.branchId })
           sync.drain()
-        })
-        .catch(() => {
+        } catch (error) {
           if (!cancelled) {
             sync.remote?.setAccessToken?.(null)
-            localStorage.removeItem(SESSION_KEY)
-            setSession(null)
+            if (error.status === 401) {
+              localStorage.removeItem(SESSION_KEY)
+              setSession(null)
+            } else {
+              // Preserve the cached identity during a temporary outage. Data
+              // stays local until the backend can refresh this session again.
+              const cached = loadSession()
+              if (cached) {
+                setSession(cached)
+                setScope({ hospitalId: cached.hospitalId, branchId: cached.branchId ?? null })
+              } else {
+                setSession(null)
+              }
+            }
           }
-        })
-        .finally(() => { if (!cancelled) setRestoring(false) })
-      return () => { cancelled = true }
+        } finally {
+          refreshing = false
+          if (!cancelled) setRestoring(false)
+        }
+      }
+      window.addEventListener('online', restoreBackendSession)
+      restoreBackendSession()
+      return () => {
+        cancelled = true
+        window.removeEventListener('online', restoreBackendSession)
+      }
     }
     if (session?.hospitalId) {
       setScope({ hospitalId: session.hospitalId, branchId: session.branchId ?? null })
@@ -203,6 +239,11 @@ export function AuthProvider({ children }) {
   // Suspension takes effect immediately, and permission changes apply live.
   useEffect(() => {
     if (!session?.userId) return undefined
+    // Backend-created staff may not exist in the local IndexedDB cache yet.
+    // Treating a cache miss as a deleted account would clear a valid backend
+    // session immediately after login. The backend validates account status
+    // during authentication; this local watcher is only for demo accounts.
+    if (backendAuthEnabled()) return undefined
     let cancelled = false
     const check = async () => {
       const staff = await baseRepo.get('staff', session.userId)

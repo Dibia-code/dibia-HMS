@@ -1,13 +1,15 @@
 // Backend API client for tenant-scoped sync and snapshot hydration.
+import { apiBase } from '@/lib/apiBase'
 
 export class RemoteApiClient {
   constructor() {
-    this.baseUrl = String(import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:4000' : '/api')).replace(/\/+$/, '')
+    this.baseUrl = apiBase()
     this.hasEndpoint = Boolean(this.baseUrl) && (import.meta.env.PROD || import.meta.env.VITE_ENABLE_SYNC === 'true' || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true')
     this.accessToken = null
     this.hospitalId = null
     this.backendBranchId = null
     this.cursorKey = 'dibia.syncCursor'
+    this.refreshPromise = null
   }
 
   get configured() { return this.hasEndpoint && !!this.accessToken }
@@ -22,12 +24,17 @@ export class RemoteApiClient {
     const send = () => fetch(url, { ...options, headers: { ...options.headers, ...(this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}) } })
     let response = await send()
     if (response.status === 401 && this.hasEndpoint) {
-      const refresh = await fetch(`${this.baseUrl}/auth/refresh`, { method: 'POST', credentials: 'include' })
-      const session = await refresh.json().catch(() => ({}))
-      if (refresh.ok && session.accessToken) {
+      if (!this.refreshPromise) {
+        this.refreshPromise = fetch(`${this.baseUrl}/auth/refresh`, { method: 'POST', credentials: 'include' })
+          .then(async (refresh) => ({ ok: refresh.ok, session: await refresh.json().catch(() => ({})) }))
+          .finally(() => { this.refreshPromise = null })
+      }
+      const { ok, session } = await this.refreshPromise
+      if (ok && session.accessToken) {
         this.setAccessToken(session.accessToken, this.hospitalId, this.backendBranchId)
         response = await send()
       }
+      if (response.status === 401) window.dispatchEvent(new CustomEvent('dibia:session-expired'))
     }
     return response
   }
@@ -46,6 +53,10 @@ export class RemoteApiClient {
     })
     const result = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(result.message || `Sync failed (${response.status})`)
+    if (Array.isArray(result.rejected) && result.rejected.length) {
+      const reason = result.rejected[0]?.message || 'The server rejected a local change'
+      throw new Error(`Sync needs attention: ${reason}`)
+    }
     return result
   }
 

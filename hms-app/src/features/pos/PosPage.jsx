@@ -81,8 +81,8 @@ export default function PosPage() {
 
   const removeLine = (productId) => setCart((prev) => prev.filter((l) => l.productId !== productId))
 
-  function onScan() {
-    const q = query.trim()
+  function onScan(scannedValue) {
+    const q = String(scannedValue ?? query).trim()
     if (!q) return
     const hit = (products || []).find((p) => p.barcode === q || p.name.toLowerCase() === q.toLowerCase())
     if (hit) {

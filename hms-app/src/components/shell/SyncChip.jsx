@@ -5,7 +5,8 @@ export function syncStatus({ configured = true, online, syncing, pending, lastEr
   if (!configured) return 'local'
   if (!online) return 'offline'
   if (lastError && !syncing) return 'failed'
-  if (pending > 0) return 'syncing'
+  if (syncing) return 'syncing'
+  if (pending > 0) return 'queued'
   return 'online'
 }
 
@@ -14,6 +15,7 @@ const LABELS = {
   local: { full: 'Saved locally', short: 'Local' },
   offline: { full: 'Offline — syncing when reconnected', short: 'Offline' },
   syncing: { full: 'Syncing...', short: 'Syncing' },
+  queued: { full: 'Waiting to sync', short: 'Queued' },
   failed: { full: 'Sync failed', short: 'Failed' },
 }
 
@@ -28,9 +30,13 @@ export function SyncChip() {
     status === 'offline'
       ? `${state.pending} change${state.pending === 1 ? '' : 's'} saved on this device, waiting to sync`
       : status === 'failed'
-        ? 'Tap to retry'
+        ? state.lastError || 'Tap to retry'
         : status === 'local'
           ? `${state.pending} change${state.pending === 1 ? '' : 's'} saved on this device. Server sync is not configured yet.`
+        : status === 'queued'
+          ? `${state.pending} change${state.pending === 1 ? '' : 's'} remain in the sync queue.`
+        : state.otherPending > 0
+          ? `${state.otherPending} queued change${state.otherPending === 1 ? '' : 's'} belong to another hospital or have no hospital assigned. They are being kept separate.`
         : undefined
 
   return (
@@ -44,7 +50,7 @@ export function SyncChip() {
       <span className="dot" />
       <span className="lbl-full">{label.full}</span>
       <span className="lbl-short">{label.short}</span>
-      {(status === 'offline' || status === 'local') && state.pending > 0 && (
+      {(status === 'offline' || status === 'local' || status === 'queued') && state.pending > 0 && (
         <span className="count" aria-label={`${state.pending} changes waiting to sync`}>
           {state.pending}
         </span>
