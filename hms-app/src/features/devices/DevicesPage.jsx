@@ -137,6 +137,7 @@ export default function DevicesPage() {
     <>
       <Card className="mb-3">
         <CardHead title="Create a device access link" />
+        <div className="text-muted mb-2">Devices do not have separate passwords. Sign-in uses each staff member’s account; reset it from Forgot password on the sign-in page or Staff → Activity → Reset password.</div>
         <div className="row wrap" style={{ alignItems: 'flex-end' }}>
           <Field label="Device name" htmlFor="dv-name" hint="For example Front desk tablet">
             <Input id="dv-name" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && invite()} />

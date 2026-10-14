@@ -1,7 +1,17 @@
 import { dataBus } from './repository'
 
 let accessToken = null
+let refreshPromise = null
 export const setConsoleAccessToken = (token) => { accessToken = token || null }
+
+function refreshConsoleSession(baseUrl) {
+  if (!refreshPromise) {
+    refreshPromise = fetch(`${baseUrl}/auth/console/session`, { credentials: 'include' })
+      .then(async (response) => ({ response, session: await response.json().catch(() => ({})) }))
+      .finally(() => { refreshPromise = null })
+  }
+  return refreshPromise
+}
 
 export class RemoteConsoleClient {
   constructor({ baseUrl } = {}) {
@@ -15,15 +25,18 @@ export class RemoteConsoleClient {
     })
     let response = await send()
     if (response.status === 401) {
-      const refresh = await fetch(`${this.baseUrl}/auth/console/session`, { credentials: 'include' })
-      const session = await refresh.json().catch(() => ({}))
+      const { response: refresh, session } = await refreshConsoleSession(this.baseUrl)
       if (refresh.ok && session.accessToken) {
         setConsoleAccessToken(session.accessToken)
         response = await send()
       }
     }
     const body = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(body.message || `Platform API failed (${response.status})`)
+    if (!response.ok) {
+      const requestId = body.requestId || response.headers.get('X-Request-ID')
+      const message = body.message || `Platform API failed (${response.status})`
+      throw new Error(requestId ? `${message} (Reference: ${requestId})` : message)
+    }
     return body
   }
 

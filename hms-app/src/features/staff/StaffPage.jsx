@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
-import { useRepo } from '@/data/RepositoryContext'
+import { useRepo, useSyncEngine } from '@/data/RepositoryContext'
 import { useAuth } from '@/auth/AuthContext'
 import { permissionsFor, PERM } from '@/auth/permissions'
 import { ROLE, ROLES } from '@/auth/roles'
 import { PERM_GROUPS } from '@/auth/permLabels'
 import { formatDateTime } from '@/lib/format'
+import { apiBase } from '@/lib/apiBase'
 import { useToast, Modal, ConfirmDialog, OnlineButton } from '@/components'
 import { useLiveQuery } from '@/hooks/useLiveQuery'
 import {
@@ -14,6 +15,7 @@ import {
 
 const emptyDraft = () => ({ id: null, firstName: '', surname: '', otherNames: '', profession: '', email: '', phone: '', branchId: '', active: true, roleSlugs: [], permGrants: [], permDenies: [], pin: '' })
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const backendAuthEnabled = () => import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
 const ADMIN_ONLY_PERMS = new Set([
   PERM.DASHBOARD_ADMIN, PERM.STAFF_MANAGE, PERM.SETTINGS_MANAGE,
   PERM.SUBSCRIPTION_MANAGE, PERM.CEO_VIEW,
@@ -25,6 +27,7 @@ const ADMIN_ONLY_PERMS = new Set([
 // UNION of permissions across every role shown here.
 export default function StaffPage() {
   const repo = useRepo()
+  const sync = useSyncEngine()
   const toast = useToast()
   const { user } = useAuth()
   const canAssignAdminRoles = (user?.roles || []).some((role) => [ROLE.SUPER_ADMIN, ROLE.FACILITY_ADMIN, ROLE.CEO_OWNER].includes(role))
@@ -125,8 +128,20 @@ export default function StaffPage() {
   }
 
   async function resetPassword(row) {
-    await repo.saveStaff({ id: row.id, roleSlugs: row.roles, passwordResetAt: new Date().toISOString(), actorId: user.userId, statusChange: 'password reset' })
-    toast.info('Password reset recorded. The temporary password is issued by the server once it is connected.')
+    if (!backendAuthEnabled()) {
+      toast.info('Password reset emails require backend authentication; no password was changed.')
+      return
+    }
+    try {
+      const response = await sync.remote.request(`${apiBase()}/staff/${encodeURIComponent(row.id)}/password-reset`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(result.message || 'Could not send the password reset email')
+      toast.success(result.message || `Password reset email sent to ${row.email}`)
+    } catch (err) {
+      toast.error(err.message || 'Could not send the password reset email')
+    }
   }
 
   const roleUnion = useMemo(() => permissionsFor(draft?.roleSlugs || []), [draft?.roleSlugs])

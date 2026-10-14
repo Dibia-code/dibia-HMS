@@ -5,6 +5,7 @@ import { permissionsFor, landingPath } from '@/auth/permissions'
 import { Button, Field, Input, Modal, useToast } from '@/components'
 import { Icon } from '@/components/Icon'
 import LegalFooter from '@/components/LegalFooter'
+import { apiBase } from '@/lib/apiBase'
 
 const DEMO = [
   { email: 'admin@demohospital.ng', name: 'Ifeoma Nwachukwu', note: 'Demo Hospital, Hospital Admin' },
@@ -25,6 +26,10 @@ export default function Login() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [forgot, setForgot] = useState(false)
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetError, setResetError] = useState('')
+  const [resetNotice, setResetNotice] = useState('')
+  const [resetBusy, setResetBusy] = useState(false)
   const hospital = (() => {
     try { return JSON.parse(localStorage.getItem('dibia.hospital') || localStorage.getItem('dibia.facility') || 'null') } catch { return null }
   })()
@@ -64,6 +69,29 @@ export default function Login() {
       setError(err.message || 'Could not sign in')
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function sendPasswordReset() {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(resetEmail.trim())) {
+      setResetError('Enter the email address on your staff account.')
+      return
+    }
+    setResetBusy(true)
+    setResetError('')
+    setResetNotice('')
+    try {
+      const response = await fetch(`${apiBase()}/auth/forgot-password`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: resetEmail.trim().toLowerCase() }),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(result.message || 'Password reset is temporarily unavailable.')
+      setResetNotice(result.message || 'If an account exists for that email, Firebase will send a password reset link.')
+    } catch (err) {
+      setResetError(err.message || 'Password reset is temporarily unavailable.')
+    } finally {
+      setResetBusy(false)
     }
   }
 
@@ -108,7 +136,7 @@ export default function Login() {
             />
           </Field>
           <div style={{ textAlign: 'right', marginTop: -6, marginBottom: 12 }}>
-            <Button type="button" variant="quiet" size="sm" onClick={() => setForgot(true)}>Forgot your password or PIN?</Button>
+            <Button type="button" variant="quiet" size="sm" onClick={() => { setResetEmail(email.includes('@') ? email.trim() : ''); setResetError(''); setResetNotice(''); setForgot(true) }}>Forgot your password or PIN?</Button>
           </div>
           <Button variant="primary" size="lg" type="submit" block disabled={busy}>
             {busy ? 'Signing in...' : 'Sign in'}
@@ -121,8 +149,11 @@ export default function Login() {
           </div>
         )}
         {forgot && (
-          <Modal title="Reset your password or PIN" onClose={() => setForgot(false)} labelledBy="forgot-title" actions={<Button variant="primary" onClick={() => setForgot(false)}>Got it</Button>}>
-          Your hospital admin resets passwords and PINs. Ask them to open Staff, choose your name, and use Reset password. They will give you a temporary one to change after you sign in.
+          <Modal title="Reset your password" onClose={() => setForgot(false)} labelledBy="forgot-title" actions={<><Button variant="quiet" onClick={() => setForgot(false)}>Close</Button><Button variant="primary" disabled={resetBusy || !resetEmail.trim()} onClick={sendPasswordReset}>{resetBusy ? 'Sending...' : 'Send reset link'}</Button></>}>
+            <p>Enter the email address on your staff account. Firebase will email a secure link to reset its password. The same reset works for hospital admins and staff.</p>
+            <Field label="Account email" htmlFor="reset-email"><Input id="reset-email" type="email" autoComplete="email" value={resetEmail} onChange={(event) => setResetEmail(event.target.value)} placeholder="you@hospital.ng" /></Field>
+            {resetError && <div role="alert" style={{ color: 'var(--critical)', fontSize: 13 }}>{resetError}</div>}
+            {resetNotice && <div role="status" className="text-muted">{resetNotice}</div>}
           </Modal>
         )}
         <div className="foot">

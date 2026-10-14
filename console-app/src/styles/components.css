@@ -52,6 +52,8 @@
 .login-sub { font-size: 13px; color: var(--muted-2); margin-bottom: 26px; }
 .login-note { font-size: 11.5px; color: var(--muted-3); margin-top: 20px; line-height: 1.5; }
 .login-error { font-size: 12.5px; color: var(--critical); font-weight: 600; margin: -4px 0 14px; }
+.login-reset-toggle { display: block; margin: 12px auto 0; padding: 4px 8px; border: 0; background: transparent; color: var(--teal-btn); font: inherit; font-size: 12px; cursor: pointer; }
+.login-reset-toggle:hover { text-decoration: underline; }
 
 /* Privacy, cookie controls and legal pages */
 .legal-footer { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 10px 20px; color: var(--muted-2); font-size: 12px; }

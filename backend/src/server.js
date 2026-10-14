@@ -43,10 +43,32 @@ const authAdmin = () => getFirebaseAuth()
 const appAuth = (uid) => db().collection('staffProfiles').doc(uid)
 const tenantRef = (tenantId) => db().collection('tenants').doc(tenantId)
 const platformUserRef = (uid) => db().collection('platformUsers').doc(uid)
-const apiError = (res, message, status = 500) => res.status(status).json({ message })
+const apiError = (res, message, status = 500) => res.status(status).json({ message, ...(status >= 500 && res.req?.requestId ? { requestId: res.req.requestId } : {}) })
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next)
+function sanitizeErrorMessage(value) {
+  return String(value || 'Unknown error')
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi, '[REDACTED_PRIVATE_KEY]')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_API_KEY]')
+    .replace(/([?&](?:key|token|password|secret|access_token|refresh_token)=)[^&\s]*/gi, '$1[REDACTED]')
+    .replace(/((?:password|token|secret|private[_-]?key|client[_-]?secret|authorization|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^,\s;]+)/gi, '$1[REDACTED]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[REDACTED_EMAIL]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, 400)
+}
+function errorDiagnostics(error, depth = 0) {
+  const details = {
+    name: String(error?.name || 'Error').slice(0, 80),
+    code: typeof error?.code === 'string' || typeof error?.code === 'number' ? error.code : null,
+    message: sanitizeErrorMessage(error?.message),
+  }
+  if (depth < 2 && error?.cause) details.cause = errorDiagnostics(error.cause, depth + 1)
+  return details
+}
 
 app.use((req, res, next) => {
+  req.requestId = crypto.randomUUID()
+  res.setHeader('X-Request-ID', req.requestId)
   res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Cache-Control': 'no-store', ...(production ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}) })
   next()
 })
@@ -144,14 +166,25 @@ async function firebasePasswordSignIn(email, password) {
   const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, returnSecureToken: true }) })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const errorCode = data.error?.message || ''
-    const error = new Error(errorCode === 'CONFIGURATION_NOT_FOUND'
-      ? 'Firebase Authentication is not initialized for this project. Enable Authentication and Email/Password sign-in in Firebase Console.'
-      : 'Invalid login details')
-    if (errorCode === 'CONFIGURATION_NOT_FOUND') error.code = 'auth/configuration-not-found'
+    const firebaseCode = String(data.error?.message || '').split(':')[0].toUpperCase()
+    const credentialErrors = new Set(['INVALID_LOGIN_CREDENTIALS', 'EMAIL_NOT_FOUND', 'INVALID_PASSWORD', 'USER_DISABLED', 'INVALID_EMAIL'])
+    const configurationErrors = new Set(['CONFIGURATION_NOT_FOUND', 'API_KEY_INVALID', 'PROJECT_NOT_FOUND', 'OPERATION_NOT_ALLOWED'])
+    const error = new Error(configurationErrors.has(firebaseCode)
+      ? 'Firebase Authentication is unavailable or misconfigured.'
+      : credentialErrors.has(firebaseCode) ? 'Invalid login details.'
+        : firebaseCode === 'TOO_MANY_ATTEMPTS_TRY_LATER' ? 'Too many sign-in attempts.'
+          : 'Firebase Authentication sign-in failed.')
+    error.code = firebaseCode === 'CONFIGURATION_NOT_FOUND' ? 'auth/configuration-not-found' : `firebase-auth/${firebaseCode.toLowerCase() || 'upstream-error'}`
+    error.status = credentialErrors.has(firebaseCode) ? 401 : firebaseCode === 'TOO_MANY_ATTEMPTS_TRY_LATER' ? 429 : 503
     throw error
   }
   return data
+}
+async function firebasePasswordReset(email) {
+  const key = encodeURIComponent(String(process.env.FIREBASE_WEB_API_KEY || ''))
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'PASSWORD_RESET', email }) })
+  const data = await response.json().catch(() => ({}))
+  return { ok: response.ok, code: String(data.error?.message || '').split(':')[0].toUpperCase() }
 }
 async function firebaseRefresh(token) {
   const key = encodeURIComponent(String(process.env.FIREBASE_WEB_API_KEY || ''))
@@ -199,7 +232,7 @@ async function seedPlatform() {
       await platformUserRef(user.uid).set({ id: user.uid, name: user.displayName || 'Dibia Platform Super Admin', email, roles: ['platform_super_admin'], active: true, updatedAt: timestamp }, { merge: true })
       await authAdmin().setCustomUserClaims(user.uid, { appAudience: 'platform', roles: ['platform_super_admin'] })
     } catch (error) {
-      console.error('Platform admin bootstrap failed', error.code || error.name)
+      console.error('Platform admin bootstrap failed', errorDiagnostics(error))
       if (production) throw error
     }
   }
@@ -245,11 +278,63 @@ app.post('/auth/login',limitAuthAttempts,asyncRoute(async(req,res)=>{
   let identifier=String(req.body?.identifier||'').trim(), password=String(req.body?.password||'')
   if(!identifier.includes('@')){const matches=await db().collection('staffProfiles').where('phone','==',identifier).limit(1).get();if(matches.empty)return apiError(res,'Invalid login details',401);identifier=matches.docs[0].data().email||''}
   if(req.body?.audience==='platform') { const signed=await firebasePasswordSignIn(identifier,password); const decoded=await authAdmin().verifyIdToken(signed.idToken); const user=await platformUserRef(decoded.uid).get(); if(!user.exists||user.data().active===false)return apiError(res,'Invalid platform login details',401); const claims={sub:decoded.uid,roles:user.data().roles||[],aud:'platform'}; await saveRefreshSession(signed.refreshToken,decoded.uid,'platform'); setCookie(res,'dibia_refresh',signed.refreshToken); await platformAudit(decoded.uid,'auth.login','platform_user',decoded.uid,{audience:'platform'}); return res.json({accessToken:accessToken(claims),user:{id:decoded.uid,name:user.data().name,email:user.data().email,roles:claims.roles}}) }
-  try { const signed=await firebasePasswordSignIn(identifier,password), {profile,tenant,branch}=await hospitalProfile(signed.idToken); await saveRefreshSession(signed.refreshToken,profile.id,'hospital'); setCookie(res,'dibia_refresh',signed.refreshToken); return res.json(session(profile,tenant,branch)) } catch(error) { if(error.code==='auth/configuration-not-found')return apiError(res,error.message,503); return res.status(error.code==='HOSPITAL_NOT_ACTIVE'?403:401).json({...(error.code==='HOSPITAL_NOT_ACTIVE'?{code:error.message.includes('awaiting approval')?'REGISTRATION_PENDING':'HOSPITAL_INACTIVE'}:{}),message:error.code==='HOSPITAL_NOT_ACTIVE'?error.message:'Invalid login details'}) }
+  try { const signed=await firebasePasswordSignIn(identifier,password), {profile,tenant,branch}=await hospitalProfile(signed.idToken); await saveRefreshSession(signed.refreshToken,profile.id,'hospital'); setCookie(res,'dibia_refresh',signed.refreshToken); return res.json(session(profile,tenant,branch)) } catch(error) { if(error.code==='auth/configuration-not-found')return apiError(res,error.message,503); if(error.status===429)return apiError(res,'Too many sign-in attempts. Try again later.',429); if(error.status>=500)return apiError(res,'Authentication service is temporarily unavailable.',503); return res.status(error.code==='HOSPITAL_NOT_ACTIVE'?403:401).json({...(error.code==='HOSPITAL_NOT_ACTIVE'?{code:error.message.includes('awaiting approval')?'REGISTRATION_PENDING':'HOSPITAL_INACTIVE'}:{}),message:error.code==='HOSPITAL_NOT_ACTIVE'?error.message:'Invalid login details'}) }
 }))
 app.post('/auth/refresh',asyncRoute(async(req,res)=>{const token=req.cookies.dibia_refresh;if(!token)return apiError(res,'Refresh session expired',401);const sessions=db().collection('refreshSessions'),sessionRef=sessions.doc(sha256(token)),prior=await sessionRef.get();if(!prior.exists||Date.parse(prior.data().expiresAt)<=Date.now())return apiError(res,'Refresh session expired',401);const refreshed=await firebaseRefresh(token);if(!refreshed)return apiError(res,'Refresh session expired',401);const decoded=await authAdmin().verifyIdToken(refreshed.id_token).catch(()=>null);if(!decoded||decoded.uid!==prior.data().uid)return apiError(res,'Refresh session expired',401);await sessionRef.delete();await saveRefreshSession(refreshed.refresh_token,decoded.uid,prior.data().audience);setCookie(res,'dibia_refresh',refreshed.refresh_token);if(prior.data().audience==='platform'){const user=await platformUserRef(decoded.uid).get();if(!user.exists||user.data().active===false)return apiError(res,'Refresh session expired',401);return res.json({accessToken:accessToken({sub:decoded.uid,roles:user.data().roles||[],aud:'platform'}),user:{id:decoded.uid,name:user.data().name,email:user.data().email,roles:user.data().roles||[]}})}const {profile,tenant,branch}=await hospitalProfile(refreshed.id_token);return res.json(session(profile,tenant,branch))}))
 app.post('/auth/logout',asyncRoute(async(req,res)=>{const token=req.cookies.dibia_refresh;if(token)await db().collection('refreshSessions').doc(sha256(token)).delete();clearCookie(res,'dibia_refresh');res.json({ok:true})}))
+app.post('/staff/:staffId/password-reset',auth,requireRole('facility_admin','ceo_owner','super_admin'),asyncRoute(async(req,res)=>{
+  const staffId=String(req.params.staffId||'').trim(),root=tenantRef(req.auth.tenantId),staffSnapshot=await root.collection('staff').doc(staffId).get()
+  let staff=staffSnapshot.exists?staffSnapshot.data():null
+  if(!staff){const record=await root.collection('records').doc(`staff__${staffId}`).get();if(record.exists&&!record.data().deleted)staff=record.data().payload}
+  if(!staff)return apiError(res,'Staff member not found in this hospital',404)
+  const email=String(staff.email||'').trim().toLowerCase()
+  if(!email)return apiError(res,'This staff account has no email address for password recovery',400)
+  let roles=Array.isArray(staff.roles)?staff.roles:Array.isArray(staff.roleSlugs)?staff.roleSlugs:[]
+  if(!roles.length){const roleRows=await root.collection('records').where('entity','==','staff_roles').get();roles=roleRows.docs.filter((doc)=>!doc.data().deleted&&doc.data().payload?.staffId===staffId&&typeof doc.data().payload?.role==='string').map((doc)=>doc.data().payload.role)}
+  roles=[...new Set(roles)]
+  if(!roles.length)return apiError(res,'Assign at least one role to this staff member before enabling sign-in',409)
+  let firebaseUser,profileSnapshot
+  try { firebaseUser=await authAdmin().getUserByEmail(email) } catch(error) {
+    if(error.code!=='auth/user-not-found')throw error
+    const temporaryPassword=crypto.randomBytes(36).toString('base64url')
+    try { firebaseUser=await authAdmin().createUser({email,password:temporaryPassword,displayName:String(staff.name||email)}) }
+    catch(createError){if(createError.code!=='auth/email-already-exists')throw createError;firebaseUser=await authAdmin().getUserByEmail(email)}
+  }
+  profileSnapshot=await appAuth(firebaseUser.uid).get()
+  const platformAccount=await platformUserRef(firebaseUser.uid).get()
+  if(platformAccount.exists||firebaseUser.customClaims?.appAudience==='platform')return apiError(res,'This email is reserved for a platform console account',409)
+  if(profileSnapshot.exists&&profileSnapshot.data().tenantId!==req.auth.tenantId)return apiError(res,'This email is already linked to another hospital account',409)
+  const timestamp=now(),profile={id:firebaseUser.uid,tenantId:req.auth.tenantId,branchId:staff.branchId||null,name:String(staff.name||firebaseUser.displayName||email),email,phone:String(staff.phone||''),profession:String(staff.profession||''),roles,active:staff.active!==false,permGrants:Array.isArray(staff.permGrants)?staff.permGrants:[],permDenies:Array.isArray(staff.permDenies)?staff.permDenies:[],createdAt:profileSnapshot.data()?.createdAt||staff.createdAt||timestamp,updatedAt:timestamp}
+  await appAuth(firebaseUser.uid).set(profile,{merge:true})
+  await authAdmin().setCustomUserClaims(firebaseUser.uid,{appAudience:'hospital',tenantId:req.auth.tenantId,roles})
+  const result=await firebasePasswordReset(email)
+  if(!result.ok){console.error('Staff password reset failed',{requestId:req.requestId,code:result.code||'FIREBASE_UPSTREAM_ERROR'});return apiError(res,'Password reset email could not be sent. Try again later.',503)}
+  await recordAudit(req.auth.tenantId,req.auth.sub,'staff.password_reset','staff',firebaseUser.uid,{email})
+  return res.json({message:'Firebase sent a password reset link to the staff member’s email address.'})
+}))
 app.post('/auth/console/login',limitAuthAttempts,asyncRoute(async(req,res)=>{const signed=await firebasePasswordSignIn(String(req.body?.email||'').trim().toLowerCase(),String(req.body?.password||''));const decoded=await authAdmin().verifyIdToken(signed.idToken);const user=await platformUserRef(decoded.uid).get();if(!user.exists||!(user.data().roles||[]).includes('platform_super_admin'))return apiError(res,'Invalid Super Admin email or password',401);await saveRefreshSession(signed.refreshToken,decoded.uid,'platform');setCookie(res,'dibia_console_refresh',signed.refreshToken);await platformAudit(decoded.uid,'auth.login','platform_user',decoded.uid);return res.json({accessToken:accessToken({sub:decoded.uid,roles:user.data().roles,aud:'platform'}),user:{id:decoded.uid,name:user.data().name,email:user.data().email}})}))
+app.post('/auth/console/forgot-password',limitAuthAttempts,asyncRoute(async(req,res)=>{
+  const email=String(req.body?.email||'').trim().toLowerCase()
+  const generic={message:'If an account exists for that email, Firebase will send a password reset link.'}
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return res.json(generic)
+  const result=await firebasePasswordReset(email)
+  if(!result.ok&&!['EMAIL_NOT_FOUND','USER_NOT_FOUND','INVALID_EMAIL'].includes(result.code)){
+    console.error('Console password reset request failed',{requestId:req.requestId,code:result.code||'FIREBASE_UPSTREAM_ERROR'})
+    return apiError(res,'Password reset is temporarily unavailable.',503)
+  }
+  return res.json(generic)
+}))
+app.post('/auth/forgot-password',limitAuthAttempts,asyncRoute(async(req,res)=>{
+  const email=String(req.body?.email||'').trim().toLowerCase()
+  const generic={message:'If an account exists for that email, Firebase will send a password reset link.'}
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return res.json(generic)
+  const result=await firebasePasswordReset(email)
+  if(!result.ok&&!['EMAIL_NOT_FOUND','USER_NOT_FOUND','INVALID_EMAIL'].includes(result.code)){
+    console.error('Hospital password reset request failed',{requestId:req.requestId,code:result.code||'FIREBASE_UPSTREAM_ERROR'})
+    return apiError(res,'Password reset is temporarily unavailable.',503)
+  }
+  return res.json(generic)
+}))
 app.get('/auth/console/session',asyncRoute(async(req,res)=>{const token=req.cookies.dibia_console_refresh||'',ref=db().collection('refreshSessions').doc(sha256(token)),saved=token?await ref.get():null;if(!saved?.exists||saved.data().audience!=='platform'||Date.parse(saved.data().expiresAt)<=Date.now())return apiError(res,'Console session expired',401);const refreshed=await firebaseRefresh(token);if(!refreshed)return apiError(res,'Console session expired',401);const decoded=await authAdmin().verifyIdToken(refreshed.id_token),user=await platformUserRef(decoded.uid).get();if(decoded.uid!==saved.data().uid||!user.exists||!(user.data().roles||[]).includes('platform_super_admin'))return apiError(res,'Console session expired',401);await ref.delete();await saveRefreshSession(refreshed.refresh_token,decoded.uid,'platform');setCookie(res,'dibia_console_refresh',refreshed.refresh_token);return res.json({accessToken:accessToken({sub:decoded.uid,roles:user.data().roles,aud:'platform'}),user:{id:decoded.uid,name:user.data().name,email:user.data().email}})}))
 app.post('/auth/console/logout',asyncRoute(async(req,res)=>{const token=req.cookies.dibia_console_refresh;if(token)await db().collection('refreshSessions').doc(sha256(token)).delete();clearCookie(res,'dibia_console_refresh');res.json({ok:true})}))
 app.get('/me',auth,asyncRoute(async(req,res)=>{const {profile,tenant,branch}=await hospitalProfileFromUid(req.auth.sub);return res.json(session(profile,tenant,branch))}))
@@ -318,11 +403,11 @@ app.post('/devices/join',asyncRoute(async(req,res)=>{const inv=await findDeviceI
 app.get('/devices',auth,requireRole('facility_admin','ceo_owner','super_admin'),asyncRoute(async(req,res)=>{const s=await tenantRef(req.auth.tenantId).collection('records').where('entity','==','devices').get();res.json({devices:s.docs.filter(d=>!d.data().deleted).map(d=>d.data().payload).filter(Boolean)})}))
 app.patch('/devices/:deviceId',auth,requireRole('facility_admin','ceo_owner','super_admin'),asyncRoute(async(req,res)=>{const status=String(req.body?.status||'');if(!['approved','rejected','revoked'].includes(status))return apiError(res,'Invalid device status',400);const ref=tenantRef(req.auth.tenantId).collection('records').doc(`devices__${req.params.deviceId}`),s=await ref.get(),old=s.data()?.payload;if(!s.exists||s.data().deleted||!old)return apiError(res,'Device not found',404);const allowed=status==='approved'||status==='rejected'?old.status==='pending':old.status==='approved';if(!allowed)return apiError(res,`A device cannot move from ${old.status} to ${status}`,409);const device={...old,status,decidedBy:req.auth.sub,decidedAt:now(),updatedAt:now()};await addRecord(req.auth.tenantId,'devices',old.id,device,'update');await recordAudit(req.auth.tenantId,req.auth.sub,`device.${status}`,'device',old.id,{before:{status:old.status},after:{status}});res.json({device})}))
 app.get('/sync/snapshot',auth,asyncRoute(async(req,res)=>{let pageState=null;if(req.query.cursor){try{const c=jwt.verify(String(req.query.cursor),JWT_SECRET,{algorithms:['HS256'],audience:'sync-snapshot'});if(c.tenantId!==req.auth.tenantId||!Number.isSafeInteger(c.highWater)||(c.after!==null&&typeof c.after!=='string'))throw Error();pageState={after:c.after,highWater:c.highWater}}catch{return apiError(res,'Invalid or expired snapshot cursor. Restart the snapshot.',400)}}const s=await readFirestoreSnapshot({tenantId:req.auth.tenantId,pageState,pageSize:200}),nextCursor=s.nextState?jwt.sign({...s.nextState,tenantId:req.auth.tenantId,aud:'sync-snapshot'},JWT_SECRET,{expiresIn:'1h'}):null;res.json({records:s.records,nextCursor,deltaCursor:s.deltaCursor})}))
-app.post('/sync',auth,asyncRoute(async(req,res)=>{const ops=Array.isArray(req.body?.ops)?req.body.ops.slice(0,50):[];try{res.json(await applyFirestoreSync({tenantId:req.auth.tenantId,actorId:req.auth.sub,ops,allowedEntities,timestamp:now}))}catch(e){console.error('Firestore sync failed',e.name);apiError(res,'Firestore sync failed')}}))
+app.post('/sync',auth,asyncRoute(async(req,res)=>{const ops=Array.isArray(req.body?.ops)?req.body.ops.slice(0,50):[];try{res.json(await applyFirestoreSync({tenantId:req.auth.tenantId,actorId:req.auth.sub,ops,allowedEntities,timestamp:now}))}catch(e){console.error('Firestore sync failed',{requestId:req.requestId,...errorDiagnostics(e)});apiError(res,'Firestore sync failed')}}))
 app.get('/sync',auth,asyncRoute(async(req,res)=>{const cursor=Math.max(0,Number(req.query.cursor||0));res.json(await readFirestoreChanges({tenantId:req.auth.tenantId,cursor}))}))
 app.get('/admin/summary',auth,requireRole('facility_admin','ceo_owner','super_admin'),asyncRoute(async(req,res)=>{const ref=tenantRef(req.auth.tenantId),[t,staff,audit]=await Promise.all([ref.get(),ref.collection('staff').get(),ref.collection('auditLogs').count().get()]);if(!t.exists)return apiError(res,'Hospital workspace not found',404);res.json({tenant:{id:t.id,slug:t.data().slug,name:t.data().name,logoUrl:t.data().logoUrl||null},staffCount:staff.size,auditCount:audit.data().count})}))
 
-app.use((error,req,res,_next)=>{if(error.code==='auth/configuration-not-found')return res.status(503).json({message:error.message});const status=error.message==='Origin not allowed'?403:Number.isInteger(error.status)&&error.status>=400&&error.status<500?error.status:500;if(status===500)console.error('Unhandled backend error',{path:req.path,code:error.code||null,name:error?.name||'Error'});res.status(status).json({message:status===403?'Request origin is not allowed':status===400?'Invalid request':'Server error'})})
+app.use((error,req,res,_next)=>{const status=error.code==='auth/configuration-not-found'?503:error.message==='Origin not allowed'?403:Number.isInteger(error.status)&&error.status>=400&&error.status<500?error.status:Number.isInteger(error.status)&&error.status>=500?error.status:500;if(status>=500){const requestId=req.requestId||crypto.randomUUID();console.error('Unhandled backend error',{requestId,method:req.method,path:req.path,...errorDiagnostics(error)});return res.status(status).json({message:error.code==='auth/configuration-not-found'?error.message:status===503?'Authentication service is temporarily unavailable.':'Server error',requestId})}if(status===401)return res.status(401).json({message:'Invalid login details.'});if(status===429)return res.status(429).json({message:'Too many sign-in attempts. Try again later.'});return res.status(status).json({message:status===403?'Request origin is not allowed':'Invalid request'})})
 async function start(){
   if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT must be an integer from 1 to 65535')
   await seedPlatform()
@@ -334,4 +419,4 @@ async function start(){
   process.once('SIGTERM', shutdown)
   process.once('SIGINT', shutdown)
 }
-start().catch(error=>{console.error('Backend startup failed',error.code||error.name||'Error');process.exitCode=1})
+start().catch(error=>{console.error('Backend startup failed',errorDiagnostics(error));process.exitCode=1})
