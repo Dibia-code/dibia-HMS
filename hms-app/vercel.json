@@ -2,7 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
-      "source": "/:path((?!api/).*)",
+      "source": "/api/:path*",
+      "destination": "https://dibia-hms-frontend-2ftu.onrender.com/:path*"
+    },
+    {
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ]

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { initials } from '@/lib/format'
+import { apiBase } from '@/lib/apiBase'
 import { setConsoleAccessToken } from '@/data/remoteClient'
 
 // Console authentication is verified by the backend. The browser stores only
@@ -41,7 +42,7 @@ export function AuthProvider({ children }) {
       return undefined
     }
     let cancelled = false
-    fetch(`${import.meta.env.VITE_API_URL || '/api'}/auth/console/session`, { credentials: 'include' })
+    fetch(`${apiBase()}/auth/console/session`, { credentials: 'include' })
       .then(async (response) => {
         if (!response.ok) throw new Error('Session expired')
         const result = await response.json()
@@ -85,7 +86,7 @@ export function AuthProvider({ children }) {
       if (!backendAuthEnabled()) {
         throw new Error('Backend sign-in is disabled. Use the local development demo until backend auth is ready.')
       }
-      const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/auth/console/login`, {
+      const response = await fetch(`${apiBase()}/auth/console/login`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: cleanEmail, password }),
       })
@@ -102,7 +103,7 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(() => {
     if (backendAuthEnabled() && !demoAuthEnabled()) {
-      fetch(`${import.meta.env.VITE_API_URL || '/api'}/auth/console/logout`, {
+      fetch(`${apiBase()}/auth/console/logout`, {
         method: 'POST', credentials: 'include',
       }).catch(() => {})
     }

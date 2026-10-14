@@ -272,7 +272,15 @@ app.post('/auth/register', limitAuthAttempts, asyncRoute(async (req,res) => {
     records.forEach(([entity,recordId,payload],i)=>{batch.set(tRef.collection('records').doc(`${entity}__${recordId}`),{tenantId,entity,recordId,payload,deleted:false,updatedAt:timestamp});batch.set(tRef.collection('syncChanges').doc(String(i+1)),{sequence:i+1,entity,recordId,operation:'create',payload,createdAt:timestamp})})
     batch.set(tRef.collection('meta').doc('sync'),{lastSequence:records.length,updatedAt:timestamp}); await authAdmin().setCustomUserClaims(user.uid,{appAudience:'hospital',tenantId,roles:profile.roles}); await batch.commit()
     return res.status(201).json({status:'pending',message:'Registration received. A Dibia administrator must approve your hospital before you can sign in.',tenant:{id:tenantId,...tenant},user:{id:user.uid,name:ownerName,email},branch})
-  } catch(error) { if(user?.uid)await authAdmin().deleteUser(user.uid).catch(()=>{}); if(error.code==='auth/email-already-exists')return res.status(409).json({message:'An account with that email already exists'}); if(error.code==='auth/configuration-not-found')return apiError(res,error.message,503); return res.status(400).json({message:production?'Could not create hospital account':error.message}) }
+  } catch(error) {
+    if(user?.uid)await authAdmin().deleteUser(user.uid).catch(()=>{})
+    console.error('Hospital registration failed',{requestId:req.requestId,...errorDiagnostics(error)})
+    if(error.code==='auth/email-already-exists')return res.status(409).json({message:'An account with that email already exists'})
+    if(error.code==='auth/configuration-not-found')return apiError(res,error.message,503)
+    const invalidInput=['auth/invalid-email','auth/invalid-password','auth/invalid-phone-number','auth/phone-number-already-exists'].includes(error.code)
+    if(production&&!invalidInput)return apiError(res,'Could not create hospital account.',503)
+    return res.status(400).json({message:production?'Check the email, phone number, and password, then try again.':error.message})
+  }
 }))
 app.post('/auth/login',limitAuthAttempts,asyncRoute(async(req,res)=>{
   let identifier=String(req.body?.identifier||'').trim(), password=String(req.body?.password||'')

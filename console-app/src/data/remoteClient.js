@@ -1,4 +1,5 @@
 import { dataBus } from './repository'
+import { apiBase } from '@/lib/apiBase'
 
 let accessToken = null
 let refreshPromise = null
@@ -15,7 +16,7 @@ function refreshConsoleSession(baseUrl) {
 
 export class RemoteConsoleClient {
   constructor({ baseUrl } = {}) {
-    this.baseUrl = String(baseUrl || import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:4000' : '/api')).replace(/\/+$/, '')
+    this.baseUrl = String(baseUrl || apiBase()).replace(/\/+$/, '')
   }
 
   async request(path, options = {}) {

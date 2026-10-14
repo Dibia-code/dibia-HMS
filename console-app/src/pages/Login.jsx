@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { Icon } from '@/components'
+import { apiBase } from '@/lib/apiBase'
 import LegalFooter from '@/components/LegalFooter'
 
 // Dibia Super Admin sign-in. Production credentials are checked by the backend.
@@ -26,7 +27,7 @@ export default function Login() {
     setBusy(true)
     try {
       if (resetMode) {
-        const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/auth/console/forgot-password`, {
+        const response = await fetch(`${apiBase()}/auth/console/forgot-password`, {
           method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email }),
         })
