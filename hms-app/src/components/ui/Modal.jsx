@@ -4,11 +4,13 @@ import { Button } from './Button'
 
 export function Modal({ title, onClose, wide, xl, children, actions, labelledBy = 'modal-title' }) {
   const ref = useRef(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
 
   useEffect(() => {
     const previous = document.activeElement
     const onKey = (e) => {
-      if (e.key === 'Escape') onClose?.()
+      if (e.key === 'Escape') onCloseRef.current?.()
     }
     document.addEventListener('keydown', onKey)
     ref.current?.focus()
@@ -16,7 +18,7 @@ export function Modal({ title, onClose, wide, xl, children, actions, labelledBy 
       document.removeEventListener('keydown', onKey)
       previous?.focus?.()
     }
-  }, [onClose])
+  }, [])
 
   return (
     <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}>
