@@ -150,7 +150,7 @@ export default function Register() {
               <Input id="address" value={form.address} onChange={set('address')} placeholder="Street, town, state" />
             </Field>
             <Field label="Email" htmlFor="email" error={errors.email} span2 required>
-              <Input id="email" type="email" value={form.email} onChange={set('email')} placeholder="you@hospital.ng" />
+              <Input id="email" type="email" autoComplete="email" value={form.email} onChange={set('email')} placeholder="you@hospital.ng" />
             </Field>
           </FormGrid>
           <div className="mt-2">
