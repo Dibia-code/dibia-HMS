@@ -2,6 +2,7 @@ import { createBrowserRouter } from 'react-router-dom'
 import { RequireAuth, RootRedirect } from '@/auth/guards'
 import { AppShell } from '@/components'
 import Login from '@/pages/Login'
+import PasswordReset from '@/pages/PasswordReset'
 import NotFound from '@/pages/NotFound'
 import OverviewPage from '@/features/overview/OverviewPage'
 import HospitalsPage from '@/features/hospitals/HospitalsPage'
@@ -16,6 +17,7 @@ import Terms from '@/pages/Terms'
 export const router = createBrowserRouter([
   { path: '/', element: <RootRedirect /> },
   { path: '/login', element: <Login /> },
+  { path: '/reset-password', element: <PasswordReset /> },
   { path: '/privacy', element: <PrivacyPolicy /> },
   { path: '/terms', element: <Terms /> },
   {

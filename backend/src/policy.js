@@ -11,7 +11,7 @@ const ROLE_PERMISSIONS = {
   facility_admin: ALL,
   ceo_owner: ALL,
   super_admin: ALL,
-  branch_manager: new Set(['pharmacy.dispense', 'audit.view', 'hmo.manage', 'dashboard.view', 'patients.manage', 'queue.view', 'queue.manage', 'billing.view', 'billing.collect', 'billing.refund', 'pos.sell', 'pos.refund', 'inventory.view', 'inventory.manage', 'purchasing.manage', 'stocktaking.manage', 'stocktaking.approve', 'expenses.manage', 'customers.view', 'customers.manage', 'reports.view', 'staff.manage', 'settings.devices']),
+  branch_manager: new Set(['pharmacy.dispense', 'audit.view', 'hmo.manage', 'dashboard.view', 'patients.manage', 'queue.view', 'queue.manage', 'billing.view', 'billing.collect', 'billing.refund', 'pos.sell', 'pos.refund', 'inventory.view', 'inventory.manage', 'purchasing.manage', 'stocktaking.manage', 'stocktaking.approve', 'expenses.manage', 'customers.view', 'customers.manage', 'reports.view', 'staff.manage', 'branches.manage', 'settings.devices']),
   superintendent_pharmacist: new Set(['pharmacy.dispense', 'pharmacy.approve', 'dashboard.view', 'queue.view', 'pos.sell', 'pos.refund', 'inventory.view', 'inventory.manage', 'purchasing.manage', 'stocktaking.manage', 'stocktaking.approve', 'customers.view', 'customers.manage', 'reports.view', 'settings.devices']),
   pharmacist: new Set(['pharmacy.dispense', 'pharmacy.approve', 'dashboard.view', 'queue.view', 'pos.sell', 'inventory.view', 'inventory.manage', 'customers.view', 'reports.view', 'settings.devices']),
   inventory_officer: new Set(['dashboard.view', 'inventory.view', 'inventory.manage', 'purchasing.manage', 'stocktaking.manage', 'settings.devices']),
@@ -81,4 +81,3 @@ export function canWriteEntity({ entity, operation, roles = [], grants = [], den
   for (const permission of denies) held.delete(permission)
   return required.some((permission) => held.has(permission))
 }
-//just added this so i can have a commit 

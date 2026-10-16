@@ -30,12 +30,11 @@ export default function DevicesPage() {
   const migrated = useRef(new Set())
   const [name, setName] = useState('')
   const [revoking, setRevoking] = useState(null)
+  const [deleting, setDeleting] = useState(null)
 
   usePageHeader({ title: 'Devices', subtitle: 'Approve which phones and computers can use this hospital account' }, [])
 
   const appOrigin = () => String(import.meta.env.VITE_HMS_PUBLIC_URL || window.location.origin).replace(/\/$/, '')
-  const link = (d) => `${appOrigin()}/device/join?token=${d.token}`
-
   useEffect(() => {
     if (!backendAuthEnabled()) return undefined
     let active = true
@@ -125,12 +124,49 @@ export default function DevicesPage() {
   }
 
   async function copy(d) {
+    let target = ''
     try {
-      await navigator.clipboard.writeText(link(d))
-      toast.success('Link copied')
-    } catch {
-      toast.info(link(d))
+      let token = d.token
+      if (backendAuthEnabled()) {
+        const response = await sync.remote.request(`${apiBase()}/devices/${encodeURIComponent(d.id)}/link`, {
+          method: 'POST', credentials: 'include', headers: {},
+        })
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok || !result.token) throw new Error(result.message || 'Could not create a valid device link')
+        token = result.token
+        setBackendDevices((previous) => (previous || []).map((row) => row.id === d.id ? { ...row, token } : row))
+      }
+      if (!token) throw new Error('Could not create a valid device link')
+      target = `${appOrigin()}/device/join?token=${encodeURIComponent(token)}`
+      try {
+        await navigator.clipboard.writeText(target)
+        toast.success('Link copied')
+      } catch {
+        toast.info(target)
+      }
+    } catch (error) {
+      toast.error(error.message || 'Could not copy the device link')
     }
+  }
+
+  async function deleteDevice(d) {
+    if (backendAuthEnabled()) {
+      try {
+        const response = await sync.remote.request(`${apiBase()}/devices/${encodeURIComponent(d.id)}`, {
+          method: 'DELETE', credentials: 'include', headers: {},
+        })
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(result.message || 'Could not delete the device link')
+        setBackendDevices((previous) => (previous || []).filter((row) => row.id !== d.id))
+      } catch (error) {
+        toast.error(error.message || 'Could not delete the device link')
+        return
+      }
+    } else {
+      await repo.remove('devices', d.id)
+      await repo.create('audit_log', { action: 'device.deleted', ref: d.name, actorId: user.userId, at: new Date().toISOString() })
+    }
+    toast.success('Device link deleted')
   }
 
   return (
@@ -158,7 +194,7 @@ export default function DevicesPage() {
               key: 'a', header: '',
               render: (d) => (
                 <span className="row" style={{ gap: 6 }}>
-                  {d.status === 'invited' && <OnlineButton size="sm" variant="ghost" onClick={() => copy(d)}>Copy link</OnlineButton>}
+                  {d.status === 'invited' && <><OnlineButton size="sm" variant="ghost" onClick={() => copy(d)}>Copy link</OnlineButton><OnlineButton size="sm" variant="danger" onClick={() => setDeleting(d)}>Delete</OnlineButton></>}
                   {d.status === 'pending' && <><OnlineButton size="sm" variant="primary" onClick={() => setStatus(d, 'approved', 'device.approved')}>Approve</OnlineButton><OnlineButton size="sm" variant="danger" onClick={() => setStatus(d, 'rejected', 'device.rejected')}>Reject</OnlineButton></>}
                   {d.status === 'approved' && <OnlineButton size="sm" variant="danger" onClick={() => setRevoking(d)}>Revoke</OnlineButton>}
                 </span>
@@ -178,6 +214,16 @@ export default function DevicesPage() {
           confirmLabel="Revoke"
           onConfirm={async () => { await setStatus(revoking, 'revoked', 'device.revoked'); setRevoking(null) }}
           onCancel={() => setRevoking(null)}
+        />
+      )}
+      {deleting && (
+        <ConfirmDialog
+          destructive
+          title={`Delete ${deleting.name}?`}
+          message="This removes the invitation and makes its access link invalid."
+          confirmLabel="Delete link"
+          onConfirm={async () => { await deleteDevice(deleting); setDeleting(null) }}
+          onCancel={() => setDeleting(null)}
         />
       )}
     </>

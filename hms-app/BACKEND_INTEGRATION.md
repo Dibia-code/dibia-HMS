@@ -17,9 +17,10 @@ Development can use local demo accounts; production builds require backend-issue
 - `POST /auth/login` accepts email or phone and password/PIN; response includes user profile, assigned roles, hospital, and branch.
 - `POST /auth/refresh` rotates the session.
 - `POST /auth/logout` revokes the session.
-- `POST /auth/password/reset` starts the account recovery process.
+- `POST /auth/forgot-password` starts account recovery; `POST /auth/password/update` saves a password from a verified recovery session.
+- `POST /staff/:staffId/password-reset` sends a reset link for a hospital staff account.
 
-The frontend identity shape is `userId`, `name`, `email`, `roles`, `hospitalId`, `hospitalSlug`, `hospitalName`, `branchId`, `permGrants`, and `permDenies`. The server must be authoritative for identity, permissions, hospital, branch, device approval, and account status. Client route guards are not an authorization boundary. Current backend role/action enforcement is incomplete.
+The frontend identity shape is `userId`, `name`, `email`, `roles`, `hospitalId`, `hospitalSlug`, `hospitalName`, `branchId`, `permGrants`, and `permDenies`. The backend verifies Supabase Auth access tokens and loads identity, roles, hospital, branch, and account status from Postgres. Client route guards are not an authorization boundary. The API validates sync permissions and tenant/branch ownership; domain workflows should be expanded as new business operations are added.
 
 Only Super Admin, Hospital Admin, and CEO / Owner accounts may assign elevated admin roles or grant admin-only permissions. Enforce this policy in the server regardless of the role picker filters in the UI.
 
@@ -31,7 +32,7 @@ Console login is separate:
 
 Verify the console password on the server. Set `CONSOLE_ADMIN_EMAIL` and `CONSOLE_ADMIN_PASSWORD` only in the backend deployment environment. Never use a `VITE_*` variable for a real secret, since Vite embeds those values into the browser bundle. The console includes fixed public preview credentials for Vite development only; real production sign-in must use backend session endpoints.
 
-The HMS sync path now has a hospital-scoped initial snapshot plus push/pull deltas. Local IndexedDB remains the offline device store and outbox; Cloud Firestore is the authoritative server store. Production must use exact HTTPS origins. The sync contract still needs complete action/permission checks and atomic domain workflows before patient data is used.
+The HMS sync path uses a hospital-scoped initial snapshot plus push/pull deltas. Supabase Postgres is the authoritative server store. Local IndexedDB remains the offline device store and outbox. Production must use exact HTTPS origins. The sync contract still needs complete action/permission checks and atomic domain workflows before patient data is used.
 
 ## Hospital data and tenant scope
 

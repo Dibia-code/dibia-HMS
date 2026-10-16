@@ -87,7 +87,7 @@ export default function Login() {
       })
       const result = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(result.message || 'Password reset is temporarily unavailable.')
-      setResetNotice(result.message || 'If an account exists for that email, Firebase will send a password reset link.')
+      setResetNotice(result.message || 'If an account exists for that email, a password reset link will be sent.')
     } catch (err) {
       setResetError(err.message || 'Password reset is temporarily unavailable.')
     } finally {
@@ -125,12 +125,12 @@ export default function Login() {
               autoFocus
             />
           </Field>
-          <Field label="Password or PIN" htmlFor="password" hint={backendAuthEnabled() ? 'Use the password assigned to your hospital account.' : 'Demo build: any password works.'}>
+          <Field label={backendAuthEnabled() ? 'Access code or password' : 'Password or PIN'} htmlFor="password" hint={backendAuthEnabled() ? 'New staff use the temporary access code from their admin. Change it with Forgot password.' : 'Demo build: any password works.'}>
             <Input
               id="password"
               type="password"
               autoComplete="current-password"
-              placeholder="Password or PIN"
+              placeholder={backendAuthEnabled() ? 'Access code or password' : 'Password or PIN'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
@@ -150,7 +150,7 @@ export default function Login() {
         )}
         {forgot && (
           <Modal title="Reset your password" onClose={() => setForgot(false)} labelledBy="forgot-title" actions={<><Button variant="quiet" onClick={() => setForgot(false)}>Close</Button><Button variant="primary" disabled={resetBusy || !resetEmail.trim()} onClick={sendPasswordReset}>{resetBusy ? 'Sending...' : 'Send reset link'}</Button></>}>
-            <p>Enter the email address on your staff account. Firebase will email a secure link to reset its password. The same reset works for hospital admins and staff.</p>
+            <p>Enter the email address on your staff account. We will email a secure link to reset its password. The same reset works for hospital admins and staff.</p>
             <Field label="Account email" htmlFor="reset-email"><Input id="reset-email" type="email" autoComplete="email" value={resetEmail} onChange={(event) => setResetEmail(event.target.value)} placeholder="you@hospital.ng" /></Field>
             {resetError && <div role="alert" style={{ color: 'var(--critical)', fontSize: 13 }}>{resetError}</div>}
             {resetNotice && <div role="status" className="text-muted">{resetNotice}</div>}

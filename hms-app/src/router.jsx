@@ -3,6 +3,7 @@ import { PERM } from '@/auth/permissions'
 import { RequireAuth, RequireTenant, RequirePerms, RequireModule, TenantIndexRedirect } from '@/auth/guards'
 import { AppShell } from '@/components'
 import Login from '@/pages/Login'
+import PasswordReset from '@/pages/PasswordReset'
 import Register from '@/pages/Register'
 import NotFound from '@/pages/NotFound'
 import LandingPage from '@/features/landing/LandingPage'
@@ -49,6 +50,7 @@ const guarded = (path, element, anyOf, moduleCode) => ({
 export const router = createBrowserRouter([
   { path: '/', element: <LandingPage /> },
   { path: '/login', element: <Login /> },
+  { path: '/reset-password', element: <PasswordReset /> },
   { path: '/register', element: <Register /> },
   { path: '/approval-pending', element: <ApprovalPending /> },
   { path: '/privacy', element: <PrivacyPolicy /> },

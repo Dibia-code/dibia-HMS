@@ -10,8 +10,6 @@ dev-dist/
 *.local
 .env
 .env.*
-!.env.example
-!.env.*.example
 
 # Logs
 *.log
@@ -19,8 +17,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Firebase service account files
+# Local migration credentials
 /backend/*service-account*.json
+/backend/scripts/migrate/*service-account*.json
+/backend/scripts/migrate/.env.migration
 
 # OS / editor cruft
 .DS_Store

@@ -13,7 +13,7 @@ import {
   Avatar, RoleBadges, Pill, FormPanel, FormGrid, Field, Input, Select, Switch, RoleChipPicker,
 } from '@/components'
 
-const emptyDraft = () => ({ id: null, firstName: '', surname: '', otherNames: '', profession: '', email: '', phone: '', branchId: '', active: true, roleSlugs: [], permGrants: [], permDenies: [], pin: '' })
+const emptyDraft = () => ({ id: null, firstName: '', surname: '', otherNames: '', profession: '', email: '', phone: '', branchId: '', active: true, roleSlugs: [], permGrants: [], permDenies: [], pin: '', accessCode: '', needsAccount: false })
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const backendAuthEnabled = () => import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
 const ADMIN_ONLY_PERMS = new Set([
@@ -83,9 +83,11 @@ export default function StaffPage() {
 
   async function save() {
     const next = {}
+    const needsAccount = backendAuthEnabled() && (!draft.id || draft.needsAccount)
     if (!draft.firstName.trim() || !draft.surname.trim()) next.name = 'First name and surname are required'
     if (!emailRe.test(draft.email)) next.email = 'Enter a valid email'
     if (!draft.roleSlugs.length) next.roles = 'Pick at least one role'
+    if (needsAccount && draft.accessCode.length < 12) next.accessCode = 'Use an access code with at least 12 characters'
     // Email must be unique across staff (skip the row being edited).
     if (!next.email) {
       const clash = await repo.findByIndex('staff', 'by_email', draft.email.trim().toLowerCase())
@@ -94,8 +96,9 @@ export default function StaffPage() {
     setErrors(next)
     if (Object.keys(next).length) return
 
+    let savedStaff
     try {
-      await repo.saveStaff({
+      savedStaff = await repo.saveStaff({
         id: draft.id || undefined,
         name: [draft.firstName, draft.surname, draft.otherNames].filter(Boolean).join(' ').trim(),
         firstName: draft.firstName.trim(), surname: draft.surname.trim(), otherNames: draft.otherNames.trim(), profession: draft.profession.trim(),
@@ -108,6 +111,15 @@ export default function StaffPage() {
         permDenies: draft.permDenies,
         actorId: user.userId,
       })
+      if (needsAccount) {
+        const roles = await repo.listByIndex('staff_roles', 'by_staff', savedStaff.id)
+        const response = await sync.remote.request(`${apiBase()}/staff/${encodeURIComponent(savedStaff.id)}/access-code`, {
+          method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accessCode: draft.accessCode, staff: savedStaff, roles }),
+        })
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(result.message || 'Could not create the staff sign-in account')
+      }
       if (draft.pin) {
         if (!/^\d{4,6}$/.test(draft.pin)) throw new Error('The approval PIN must be 4 to 6 digits')
         const saved = draft.id || (await repo.findByIndex('staff', 'by_email', draft.email.trim().toLowerCase()))?.id
@@ -116,6 +128,7 @@ export default function StaffPage() {
       toast.success(draft.id ? 'Staff member updated' : 'Staff member added')
       setDraft(null)
     } catch (err) {
+      if (savedStaff && needsAccount) setDraft((current) => ({ ...current, id: savedStaff.id, needsAccount: true }))
       toast.error(err.message || 'Could not save staff member')
     }
   }
@@ -173,6 +186,11 @@ export default function StaffPage() {
               <Field label="Email" htmlFor="s-email" error={errors.email}>
                 <Input id="s-email" type="email" value={draft.email} onChange={(e) => set('email', e.target.value)} placeholder="name@hospital.ng" />
               </Field>
+              {backendAuthEnabled() && (!draft.id || draft.needsAccount) && (
+                <Field label="Temporary access code" htmlFor="s-access-code" span2 error={errors.accessCode} hint="Staff use this with their email to sign in. Use at least 12 characters; they can change it with Forgot password.">
+                  <Input id="s-access-code" type="password" autoComplete="new-password" value={draft.accessCode} onChange={(e) => set('accessCode', e.target.value)} />
+                </Field>
+              )}
               <Field label="Phone" htmlFor="s-phone">
                 <Input id="s-phone" value={draft.phone} onChange={(e) => set('phone', e.target.value)} placeholder="080…" />
               </Field>
@@ -263,7 +281,7 @@ export default function StaffPage() {
                     size="sm"
                     icon="edit"
                     aria-label={`Edit ${r.name}`}
-                    onClick={() => { setErrors({}); setDraft({ id: r.id, firstName: r.firstName || r.name?.split(' ')[0] || '', surname: r.surname || r.name?.split(' ').slice(1, 2).join('') || '', otherNames: r.otherNames || r.name?.split(' ').slice(2).join(' ') || '', profession: r.profession || '', email: r.email, phone: r.phone || '', branchId: r.branchId || '', active: r.active !== false, roleSlugs: r.roles, permGrants: r.permGrants || [], permDenies: r.permDenies || [], pin: '' }) }}
+                    onClick={() => { setErrors({}); setDraft({ id: r.id, firstName: r.firstName || r.name?.split(' ')[0] || '', surname: r.surname || r.name?.split(' ').slice(1, 2).join('') || '', otherNames: r.otherNames || r.name?.split(' ').slice(2).join(' ') || '', profession: r.profession || '', email: r.email, phone: r.phone || '', branchId: r.branchId || '', active: r.active !== false, roleSlugs: r.roles, permGrants: r.permGrants || [], permDenies: r.permDenies || [], pin: '', accessCode: '', needsAccount: false }) }}
                   />
                   {r.id !== user.userId && (
                     <Button variant={r.active === false ? 'ghost' : 'danger'} size="sm" onClick={() => setSuspending(r)}>{r.active === false ? 'Reactivate' : 'Suspend'}</Button>

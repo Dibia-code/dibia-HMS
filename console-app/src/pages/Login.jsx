@@ -33,7 +33,7 @@ export default function Login() {
         })
         const result = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(result.message || 'Password reset is temporarily unavailable.')
-        setNotice(result.message || 'If an account exists for that email, Firebase will send a password reset link.')
+        setNotice(result.message || 'If an account exists for that email, a password reset link will be sent.')
       } else {
         await login(email, password)
         navigate(from, { replace: true })

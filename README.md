@@ -15,3 +15,5 @@ The separate console supports Dibia network administrators who manage hospital r
 New hospital registrations wait for Dibia Super Admin approval before the hospital owner can sign in. The apps use essential, secure session cookies for sign-in; they do not use analytics or advertising cookies.
 
 The console includes local preview credentials for demonstration only. Real administrator accounts must be authenticated by the backend when integration is enabled.
+
+The production backend uses Supabase Auth and Supabase Postgres. Apply the SQL migration in `backend/supabase/migrations/` before configuring the backend environment. See [backend setup](backend/README.md) for deployment and one-time data transfer steps.

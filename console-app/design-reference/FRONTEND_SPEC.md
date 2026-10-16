@@ -57,7 +57,7 @@ All hospital and branch authorization must be enforced by the backend for every 
 
 The hospital app uses IndexedDB as its local store and queues writes for sync. Sync operations must be idempotent, validate hospital, branch, actor, record, and permission on the server, and return durable acknowledgements. Patient data must not be placed in public service-worker caches.
 
-Firestore is the authoritative server store. IndexedDB is the disconnected device store and outbox. The current IndexedDB implementation is not application-layer encrypted; production offline patient data requires an approved device-encryption and retention design.
+Supabase Postgres is the authoritative server store. IndexedDB is the disconnected device store and outbox. The current IndexedDB implementation is not application-layer encrypted; production offline patient data requires an approved device-encryption and retention design.
 
 ## Current backend gaps
 

@@ -8,14 +8,16 @@
   },
   "scripts": {
     "dev": "node --watch src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "migrate:source": "node scripts/migrate/transfer.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.118.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "firebase-admin": "^14.5.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "pg": "8.23.1"
   }
 }
