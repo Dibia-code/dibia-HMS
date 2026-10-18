@@ -1,7 +1,7 @@
 import { Outlet } from 'react-router-dom'
 import { useMemo } from 'react'
-import { useAuth } from '../../console-app/src/auth/AuthContext'
-import { useRepo } from '../../console-app/src/data/RepositoryContext'
+import { useAuth } from '../../../console-app/src/auth/AuthContext'
+import { useRepo } from '../../../console-app/src/data/RepositoryContext'
 import FeedbackNotebook from './FeedbackNotebook'
 
 export default function FeedbackLayerConsole() {

@@ -1,7 +1,7 @@
 import { Outlet } from 'react-router-dom'
 import { useMemo } from 'react'
-import { useAuth } from '../../hms-app/src/auth/AuthContext'
-import { useSyncEngine } from '../../hms-app/src/data/RepositoryContext'
+import { useAuth } from '../auth/AuthContext'
+import { useSyncEngine } from '../data/RepositoryContext'
 import FeedbackNotebook from './FeedbackNotebook'
 
 const allowedEmails = String(import.meta.env.VITE_FEEDBACK_REVIEWER_EMAILS || 'olawoyinabdulsalam202@gmail.com,iezediba@gmail.com').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean)

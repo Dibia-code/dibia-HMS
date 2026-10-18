@@ -38,7 +38,7 @@ import BillsPage from '@/features/cashier/BillsPage'
 import ApprovalPending from '@/pages/ApprovalPending'
 import PrivacyPolicy from '@/pages/PrivacyPolicy'
 import Terms from '@/pages/Terms'
-import FeedbackLayerHms from '../../shared/feedback/FeedbackLayerHms'
+import FeedbackLayerHms from './feedback/FeedbackLayerHms'
 
 // A tenant route protected by a permission (any-of). Wraps the element in the
 // RequirePerms gate so access is decided by the union of the user's roles (§2).

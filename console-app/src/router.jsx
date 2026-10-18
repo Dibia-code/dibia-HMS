@@ -10,7 +10,7 @@ import BillingPage from '@/features/billing/BillingPage'
 import SupportPage from '@/features/support/SupportPage'
 import PrivacyPolicy from '@/pages/PrivacyPolicy'
 import Terms from '@/pages/Terms'
-import FeedbackLayerConsole from '../../shared/feedback/FeedbackLayerConsole'
+import FeedbackLayerConsole from '../../hms-app/src/feedback/FeedbackLayerConsole'
 
 // The console's routing table, exactly as scoped: /login, /overview,
 // /hospitals, /billing, /support. Everything except /login sits behind the
