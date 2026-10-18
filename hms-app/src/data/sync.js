@@ -44,7 +44,8 @@ export class SyncEngine {
   getState() {
     return {
       online: this.online,
-      configured: this.remote.configured !== false,
+      configured: this.remote.hasEndpoint !== false,
+      authenticated: Boolean(this.remote.accessToken),
       syncing: this.syncing,
       pending: this.pending,
       otherPending: this.otherPending,
@@ -79,6 +80,25 @@ export class SyncEngine {
     }
     this._emit()
     return this.pending
+  }
+
+  async reconnect() {
+    if (!this.remote.hasEndpoint) return false
+    try {
+      const response = await this.remote.request(`${this.remote.baseUrl}/me`, { credentials: 'include', headers: {} })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || !result.accessToken || !result.user?.id) throw new Error(result.message || 'Sign in again to resume server sync')
+      this.remote.setAccessToken(result.accessToken, result.user.hospitalId || result.tenant?.id, result.user.branchId || result.branch?.id)
+      this.lastError = null
+      this._emit()
+      dataBus.dispatchEvent(new CustomEvent('change', { detail: { entities: ['staff', 'staff_roles'] } }))
+      await this.drain()
+      return true
+    } catch (error) {
+      this.lastError = error?.message || 'Could not reconnect to the server'
+      this._emit()
+      return false
+    }
   }
 
   // Nudge after a write so the chip's pending count updates immediately and we
@@ -173,7 +193,7 @@ export class SyncEngine {
         }))
 
         // Throws when offline / network error → caught below, ops stay queued.
-        const { acked } = await this.remote.pushOps(ops)
+        const { acked, rejected = [] } = await this.remote.pushOps(ops)
 
         const ackedSet = new Set(acked)
         const seqBySameOp = new Map(batch.map((e) => [e.opId, e.seq]))
@@ -184,10 +204,13 @@ export class SyncEngine {
         }
         await delTx.done
 
-        const processed = new Set(batch.map((entry) => entry.opId))
-        queue = queue.filter((entry) => !processed.has(entry.opId))
+        queue = queue.filter((entry) => !ackedSet.has(entry.opId))
         await this.refreshPending()
         this._emit()
+        if (rejected.length) {
+          const reason = rejected[0]?.message || 'The server rejected a local change'
+          throw new Error(`Sync needs attention: ${reason}`)
+        }
       }
 
       if (this.remote.configured && typeof this.remote.pull === 'function') {

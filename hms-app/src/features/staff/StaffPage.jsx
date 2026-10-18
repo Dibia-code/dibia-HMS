@@ -13,7 +13,7 @@ import {
   Avatar, RoleBadges, Pill, FormPanel, FormGrid, Field, Input, Select, Switch, RoleChipPicker,
 } from '@/components'
 
-const emptyDraft = () => ({ id: null, firstName: '', surname: '', otherNames: '', profession: '', email: '', phone: '', branchId: '', active: true, roleSlugs: [], permGrants: [], permDenies: [], pin: '', accessCode: '', needsAccount: false })
+const emptyDraft = () => ({ id: null, firstName: '', surname: '', otherNames: '', profession: '', email: '', phone: '', branchId: '', active: true, roleSlugs: [], permGrants: [], permDenies: [], pin: '', accessCode: '', needsAccount: false, createDeviceLink: false, deviceName: '' })
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const backendAuthEnabled = () => import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
 const ADMIN_ONLY_PERMS = new Set([
@@ -35,6 +35,7 @@ export default function StaffPage() {
     ? ROLES
     : ROLES.filter((role) => ![ROLE.SUPER_ADMIN, ROLE.FACILITY_ADMIN, ROLE.CEO_OWNER].includes(role.slug))
   const [history, setHistory] = useState(null)
+  const [newDeviceLink, setNewDeviceLink] = useState('')
   const [suspending, setSuspending] = useState(null)
   const [draft, setDraft] = useState(null) // null = panel closed
   const [errors, setErrors] = useState({})
@@ -88,6 +89,7 @@ export default function StaffPage() {
     if (!emailRe.test(draft.email)) next.email = 'Enter a valid email'
     if (!draft.roleSlugs.length) next.roles = 'Pick at least one role'
     if (needsAccount && draft.accessCode.length < 12) next.accessCode = 'Use an access code with at least 12 characters'
+    if (needsAccount && draft.createDeviceLink && !draft.deviceName.trim()) next.deviceName = 'Enter a name for this computer'
     // Email must be unique across staff (skip the row being edited).
     if (!next.email) {
       const clash = await repo.findByIndex('staff', 'by_email', draft.email.trim().toLowerCase())
@@ -115,10 +117,22 @@ export default function StaffPage() {
         const roles = await repo.listByIndex('staff_roles', 'by_staff', savedStaff.id)
         const response = await sync.remote.request(`${apiBase()}/staff/${encodeURIComponent(savedStaff.id)}/access-code`, {
           method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ accessCode: draft.accessCode, staff: savedStaff, roles }),
+          body: JSON.stringify({ accessCode: draft.accessCode, staff: savedStaff, roles, createDeviceLink: draft.createDeviceLink, deviceName: draft.deviceName }),
         })
         const result = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(result.message || 'Could not create the staff sign-in account')
+        if (result.deviceInvitation?.token) {
+          const origin = String(import.meta.env.VITE_HMS_PUBLIC_URL || window.location.origin).replace(/\/$/, '')
+          setNewDeviceLink(`${origin}/device/join?token=${encodeURIComponent(result.deviceInvitation.token)}`)
+        }
+      } else if (draft.id && backendAuthEnabled() && savedStaff.authUserId) {
+        const roles = await repo.listByIndex('staff_roles', 'by_staff', savedStaff.id)
+        const response = await sync.remote.request(`${apiBase()}/staff/${encodeURIComponent(savedStaff.id)}/access`, {
+          method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roles, permGrants: savedStaff.permGrants || [], permDenies: savedStaff.permDenies || [] }),
+        })
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(result.message || 'Could not update staff access')
       }
       if (draft.pin) {
         if (!/^\d{4,6}$/.test(draft.pin)) throw new Error('The approval PIN must be 4 to 6 digits')
@@ -189,6 +203,16 @@ export default function StaffPage() {
               {backendAuthEnabled() && (!draft.id || draft.needsAccount) && (
                 <Field label="Temporary access code" htmlFor="s-access-code" span2 error={errors.accessCode} hint="Staff use this with their email to sign in. Use at least 12 characters; they can change it with Forgot password.">
                   <Input id="s-access-code" type="password" autoComplete="new-password" value={draft.accessCode} onChange={(e) => set('accessCode', e.target.value)} />
+                </Field>
+              )}
+              {backendAuthEnabled() && !draft.id && (
+                <Field label="Device access" span2 hint="Create a link that is bound to the first computer that requests access. The staff member can sign in only from that approved computer.">
+                  <Switch checked={draft.createDeviceLink} onChange={(checked) => set('createDeviceLink', checked)} label="Require an approved computer for this staff account" />
+                </Field>
+              )}
+              {backendAuthEnabled() && !draft.id && draft.createDeviceLink && (
+                <Field label="Computer name" htmlFor="s-device-name" span2 error={errors.deviceName}>
+                  <Input id="s-device-name" value={draft.deviceName} onChange={(event) => set('deviceName', event.target.value)} placeholder="For example, Nurse Ada's workstation" />
                 </Field>
               )}
               <Field label="Phone" htmlFor="s-phone">
@@ -311,6 +335,18 @@ export default function StaffPage() {
             rows={(audit || []).filter((a) => a.actorId === history.id).sort((x, y) => new Date(y.at) - new Date(x.at)).slice(0, 30)}
             empty={<div className="empty-row">No activity recorded yet.</div>}
           />
+        </Modal>
+      )}
+
+      {newDeviceLink && (
+        <Modal title="Staff device link" onClose={() => setNewDeviceLink('')} labelledBy="staff-device-link-title" actions={
+          <>
+            <Button variant="quiet" onClick={() => setNewDeviceLink('')}>Close</Button>
+            <Button variant="primary" onClick={async () => { try { await navigator.clipboard.writeText(newDeviceLink); toast.success('Device link copied') } catch { toast.info(newDeviceLink) } }}>Copy link</Button>
+          </>
+        }>
+          <p>Send this link to the staff member. They must open it on the computer they will use, then wait for you to approve it in Devices.</p>
+          <Input aria-label="Staff device link" readOnly value={newDeviceLink} onFocus={(event) => event.target.select()} />
         </Modal>
       )}
 

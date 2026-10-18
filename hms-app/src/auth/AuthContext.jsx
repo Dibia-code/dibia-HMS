@@ -3,6 +3,7 @@ import { useBaseRepo, useScope, useSyncEngine } from '@/data/RepositoryContext'
 import { dataBus } from '@/data/repository'
 import { hashPin } from '@/lib/pin'
 import { apiBase } from '@/lib/apiBase'
+import { activeDeviceHeaders } from '@/lib/deviceCredential'
 import { permissionsFor, can as canDo, landingPath } from './permissions'
 
 // Production and backend-enabled development authenticate against the API.
@@ -23,8 +24,9 @@ function fromBackend(result) {
     hospitalName: user.hospitalName || result?.tenant?.name,
     branchId: user.branchId || result?.branch?.id || null,
     backendBranchId: user.branchId || result?.branch?.id || null,
-    permGrants: [],
-    permDenies: [],
+    permGrants: Array.isArray(user.permGrants) ? user.permGrants : [],
+    permDenies: Array.isArray(user.permDenies) ? user.permDenies : [],
+    mustChangePassword: user.mustChangePassword === true,
   }
 }
 
@@ -83,7 +85,7 @@ export function AuthProvider({ children }) {
         if (cancelled || refreshing) return
         refreshing = true
         try {
-          const response = await fetch(`${apiBase()}/auth/refresh`, { method: 'POST', credentials: 'include' })
+          const response = await fetch(`${apiBase()}/auth/refresh`, { method: 'POST', credentials: 'include', headers: activeDeviceHeaders() })
           const result = await response.json().catch(() => ({}))
           if (!response.ok) {
             const error = new Error(result.message || 'No active backend session')
@@ -92,6 +94,8 @@ export function AuthProvider({ children }) {
           }
           if (cancelled) return
           const next = fromBackend(result)
+          const cached = loadSession()
+          if (cached?.userId === next.userId && cached.passwordChangeSkipped) next.passwordChangeSkipped = true
           if (!next.userId || !next.hospitalId || !next.hospitalSlug) throw new Error('The server returned an incomplete hospital session')
           sync.remote?.setAccessToken?.(result.accessToken, next.hospitalId, next.backendBranchId)
           next.moduleCodes = await loadBackendModules(sync.remote)
@@ -142,7 +146,7 @@ export function AuthProvider({ children }) {
       const id = String(email).trim().toLowerCase()
       if (backendAuthEnabled()) {
         const response = await fetch(`${apiBase()}/auth/login`, {
-          method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', ...activeDeviceHeaders() },
           body: JSON.stringify({ identifier: id, password }),
         })
         const result = await response.json().catch(() => ({}))
@@ -293,6 +297,53 @@ export function AuthProvider({ children }) {
     refreshModules()
     const timer = setInterval(refreshModules, 60_000)
     return () => { cancelled = true; clearInterval(timer) }
+  }, [session?.userId, sync])
+
+  useEffect(() => {
+    if (!backendAuthEnabled() || !session?.userId) return undefined
+    let cancelled = false
+    let refreshing = false
+    const refreshAccess = async () => {
+      if (refreshing) return
+      refreshing = true
+      try {
+        const response = await sync.remote.request(`${apiBase()}/me`, { credentials: 'include', headers: {} })
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok || cancelled) return
+        const next = fromBackend(result)
+        next.moduleCodes = await loadBackendModules(sync.remote)
+        setSession((previous) => {
+          if (!previous || previous.userId !== next.userId) return previous
+          if (previous.passwordChangeSkipped && next.mustChangePassword) next.passwordChangeSkipped = true
+          const same = (left = [], right = []) => left.length === right.length && left.every((value) => right.includes(value))
+          if (
+            previous.name === next.name &&
+            previous.email === next.email &&
+            previous.branchId === next.branchId &&
+            previous.mustChangePassword === next.mustChangePassword &&
+            same(previous.roles, next.roles) &&
+            same(previous.permGrants, next.permGrants) &&
+            same(previous.permDenies, next.permDenies) &&
+            same(previous.moduleCodes, next.moduleCodes)
+          ) return previous
+          localStorage.setItem(SESSION_KEY, JSON.stringify(next))
+          return next
+        })
+      } catch {
+      } finally {
+        refreshing = false
+      }
+    }
+    const onChange = (event) => {
+      if (event.detail.entities.some((entity) => entity === 'staff' || entity === 'staff_roles')) refreshAccess()
+    }
+    dataBus.addEventListener('change', onChange)
+    const timer = window.setInterval(refreshAccess, 15_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      dataBus.removeEventListener('change', onChange)
+    }
   }, [session?.userId, sync])
 
   const updateSession = useCallback((patch) => {

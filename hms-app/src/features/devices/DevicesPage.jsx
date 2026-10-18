@@ -25,10 +25,12 @@ export default function DevicesPage() {
   const sync = useSyncEngine()
   const toast = useToast()
   const { data: devices } = useLiveQuery(() => repo.list('devices'), [repo])
+  const { data: staff } = useLiveQuery(() => repo.list('staff'), [repo])
   const [backendDevices, setBackendDevices] = useState(null)
   const [backendError, setBackendError] = useState('')
   const migrated = useRef(new Set())
   const [name, setName] = useState('')
+  const [assignedStaffId, setAssignedStaffId] = useState('')
   const [revoking, setRevoking] = useState(null)
   const [deleting, setDeleting] = useState(null)
 
@@ -87,7 +89,7 @@ export default function DevicesPage() {
       try {
         const response = await sync.remote.request(`${apiBase()}/devices/invite`, {
           method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, name: name.trim(), token }),
+        body: JSON.stringify({ id, name: name.trim(), token, assignedStaffId }),
         })
         const result = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(result.message || 'Could not save the access link to the backend')
@@ -101,6 +103,7 @@ export default function DevicesPage() {
       await repo.create('audit_log', { action: 'device.invited', ref: name.trim(), actorId: user.userId, at: new Date().toISOString() })
     }
     setName('')
+    setAssignedStaffId('')
     toast.success('Access link created')
   }
 
@@ -134,7 +137,7 @@ export default function DevicesPage() {
         const result = await response.json().catch(() => ({}))
         if (!response.ok || !result.token) throw new Error(result.message || 'Could not create a valid device link')
         token = result.token
-        setBackendDevices((previous) => (previous || []).map((row) => row.id === d.id ? { ...row, token } : row))
+        setBackendDevices((previous) => (previous || []).map((row) => row.id === d.id ? { ...row, ...(result.device || {}), token } : row))
       }
       if (!token) throw new Error('Could not create a valid device link')
       target = `${appOrigin()}/device/join?token=${encodeURIComponent(token)}`
@@ -173,14 +176,20 @@ export default function DevicesPage() {
     <>
       <Card className="mb-3">
         <CardHead title="Create a device access link" />
-        <div className="text-muted mb-2">Devices do not have separate passwords. Sign-in uses each staff member’s account; reset it from Forgot password on the sign-in page or Staff → Activity → Reset password.</div>
+        <div className="text-muted mb-2">Each invitation is assigned to one staff sign-in account and binds to the first computer that requests access. Only that approved computer can use the account.</div>
         <div className="row wrap" style={{ alignItems: 'flex-end' }}>
           <Field label="Device name" htmlFor="dv-name" hint="For example Front desk tablet">
             <Input id="dv-name" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && invite()} />
           </Field>
-          <OnlineButton variant="primary" onClick={invite} disabled={!name.trim()}>Create link</OnlineButton>
+          <Field label="Staff account" htmlFor="dv-staff">
+            <Select id="dv-staff" value={assignedStaffId} onChange={(e) => setAssignedStaffId(e.target.value)}>
+              <option value="">Choose a staff account</option>
+              {(staff || []).filter((row) => row.active !== false && row.email).map((row) => <option key={row.id} value={row.id}>{row.name} ({row.email})</option>)}
+            </Select>
+          </Field>
+          <OnlineButton variant="primary" onClick={invite} disabled={!name.trim() || !assignedStaffId}>Create link</OnlineButton>
         </div>
-        <div className="text-muted mt-2">Links are stored on the backend. The device asks for access here, and its status refreshes automatically. For another device, set VITE_HMS_PUBLIC_URL to an address it can reach; localhost only works on this computer.</div>
+        <div className="text-muted mt-2">The staff member opens the link on the computer they will use. Once they request access, approve that computer here. Revoke blocks it immediately; approve can restore a revoked computer.</div>
       </Card>
 
       {backendError && <div className="lock-note" role="status">Device status could not refresh: {backendError}</div>}
@@ -188,15 +197,16 @@ export default function DevicesPage() {
       <Card>
         <DataTable
           columns={[
-            { key: 'n', header: 'Device', render: (d) => (<div><div className="cell-strong">{d.name}</div><div className="cell-sub">{d.requestedName ? `Requested as ${d.requestedName}` : `Created ${formatDateTime(d.createdAt)}`}</div></div>) },
+            { key: 'n', header: 'Device', render: (d) => (<div><div className="cell-strong">{d.name}</div><div className="cell-sub">{d.assignedStaffName ? `For ${d.assignedStaffName}${d.assignedStaffEmail ? ` · ${d.assignedStaffEmail}` : ''}` : 'No staff account assigned'}{d.requestedName ? ` · Requested as ${d.requestedName}` : ` · Created ${formatDateTime(d.createdAt)}`}</div></div>) },
             { key: 's', header: 'Status', render: (d) => <Pill tone={STATUS[d.status].tone}>{STATUS[d.status].label}</Pill> },
             {
               key: 'a', header: '',
               render: (d) => (
                 <span className="row" style={{ gap: 6 }}>
                   {d.status === 'invited' && <><OnlineButton size="sm" variant="ghost" onClick={() => copy(d)}>Copy link</OnlineButton><OnlineButton size="sm" variant="danger" onClick={() => setDeleting(d)}>Delete</OnlineButton></>}
-                  {d.status === 'pending' && <><OnlineButton size="sm" variant="primary" onClick={() => setStatus(d, 'approved', 'device.approved')}>Approve</OnlineButton><OnlineButton size="sm" variant="danger" onClick={() => setStatus(d, 'rejected', 'device.rejected')}>Reject</OnlineButton></>}
-                  {d.status === 'approved' && <OnlineButton size="sm" variant="danger" onClick={() => setRevoking(d)}>Revoke</OnlineButton>}
+                  {d.status === 'pending' && <><OnlineButton size="sm" variant="primary" onClick={() => setStatus(d, 'approved', 'device.approved')}>Approve</OnlineButton><OnlineButton size="sm" variant="danger" onClick={() => setStatus(d, 'rejected', 'device.rejected')}>Reject</OnlineButton><OnlineButton size="sm" variant="ghost" onClick={() => copy(d)}>Copy link</OnlineButton></>}
+                  {d.status === 'approved' && <><OnlineButton size="sm" variant="ghost" onClick={() => copy(d)}>Copy link</OnlineButton><OnlineButton size="sm" variant="danger" onClick={() => setRevoking(d)}>Revoke</OnlineButton></>}
+                  {d.status === 'revoked' && <><OnlineButton size="sm" variant="primary" onClick={() => setStatus(d, 'approved', 'device.approved')}>Approve</OnlineButton><OnlineButton size="sm" variant="ghost" onClick={() => copy(d)}>Copy link</OnlineButton></>}
                 </span>
               ),
             },

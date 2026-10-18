@@ -58,12 +58,6 @@ export default function Register() {
           return
         }
         const tenant = result.tenant
-        const owner = result.user
-        const branch = result.branch
-        await baseRepo.create('hospitals', { id: tenant.id, slug: tenant.slug, name: tenant.name, plan: 'Freemium', subscriptionStatus: 'active', email, phone: form.phone.trim(), address: form.address.trim(), ...defaultHospitalConfig() })
-        if (branch?.id) await baseRepo.create('branches', { id: branch.id, hospitalId: tenant.id, name: branch.name || 'Main Branch', isMain: true })
-        await baseRepo.create('staff', { id: owner.id, hospitalId: tenant.id, branchId: branch?.id || null, name: owner.name, email, phone: form.phone.trim(), active: true, ...(!backendAuthEnabled() ? { passwordHash: await hashPin(form.password, owner.id) } : {}) })
-        await baseRepo.create('staff_roles', { id: `${owner.id}__${ROLE.FACILITY_ADMIN}`, staffId: owner.id, role: ROLE.FACILITY_ADMIN })
         await login(email, form.password)
         toast.success('Hospital created. Welcome to Dibia')
         navigate(`/${tenant.slug}/dashboard`, { replace: true })

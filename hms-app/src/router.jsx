@@ -4,6 +4,7 @@ import { RequireAuth, RequireTenant, RequirePerms, RequireModule, TenantIndexRed
 import { AppShell } from '@/components'
 import Login from '@/pages/Login'
 import PasswordReset from '@/pages/PasswordReset'
+import ChangePassword from '@/pages/ChangePassword'
 import Register from '@/pages/Register'
 import NotFound from '@/pages/NotFound'
 import LandingPage from '@/features/landing/LandingPage'
@@ -37,6 +38,7 @@ import BillsPage from '@/features/cashier/BillsPage'
 import ApprovalPending from '@/pages/ApprovalPending'
 import PrivacyPolicy from '@/pages/PrivacyPolicy'
 import Terms from '@/pages/Terms'
+import FeedbackLayerHms from '../../shared/feedback/FeedbackLayerHms'
 
 // A tenant route protected by a permission (any-of). Wraps the element in the
 // RequirePerms gate so access is decided by the union of the user's roles (§2).
@@ -47,10 +49,11 @@ const guarded = (path, element, anyOf, moduleCode) => ({
 
 // Routing tree — tenant + auth routes follow FRONTEND_SPEC §2. `/` also serves
 // the public marketing landing, whose CTAs route into /login and /register.
-export const router = createBrowserRouter([
+export const router = createBrowserRouter([{ element: <FeedbackLayerHms />, children: [
   { path: '/', element: <LandingPage /> },
   { path: '/login', element: <Login /> },
   { path: '/reset-password', element: <PasswordReset /> },
+  { path: '/change-password', element: <ChangePassword /> },
   { path: '/register', element: <Register /> },
   { path: '/approval-pending', element: <ApprovalPending /> },
   { path: '/privacy', element: <PrivacyPolicy /> },
@@ -106,4 +109,4 @@ export const router = createBrowserRouter([
   },
 
   { path: '*', element: <NotFound /> },
-])
+]}])

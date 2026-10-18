@@ -39,7 +39,7 @@ const entityTables = {
   complaints: { table: 'complaints', fields: { patientId: 'patient_id', visitId: 'visit_id', status: 'status', createdBy: 'created_by', createdAt: 'created_at' } },
   hr_actions: { table: 'hr_actions', fields: { staffId: 'staff_id', actionType: 'action_type', effectiveAt: 'effective_at', createdBy: 'created_by', createdAt: 'created_at' } },
   staff_payments: { table: 'staff_payments', fields: { staffId: 'staff_id', amountMinor: 'amount_minor', paymentStatus: 'payment_status', paidAt: 'paid_at', createdAt: 'created_at' } },
-  devices: { table: 'devices', fields: { name: 'name', status: 'status', createdAt: 'created_at', updatedAt: 'updated_at' } },
+  devices: { table: 'devices', fields: { name: 'name', status: 'status', assignedStaffId: 'assigned_staff_id', createdAt: 'created_at', updatedAt: 'updated_at' } },
   audit_log: { table: 'audit_logs', fields: { actorId: 'actor_id', action: 'action', entity: 'entity', recordId: 'record_id', createdAt: 'created_at' } },
   settings: { table: 'hospital_settings', fields: { updatedAt: 'updated_at' } },
   staff_roles: { table: 'staff_roles', fields: { staffId: 'staff_id', role: 'role', createdAt: 'created_at' } },
@@ -89,8 +89,15 @@ export function supabaseStatus() {
 }
 
 export async function checkSupabaseDatabase() {
-  const result = await query("select to_regclass('public.tenants') as tenants, to_regclass('public.sync_changes') as sync_changes")
-  if (!result.rows[0]?.tenants || !result.rows[0]?.sync_changes) throw new Error('Supabase schema migration has not been applied')
+  const result = await query(`
+    select to_regclass('public.tenants') as tenants,
+      to_regclass('public.sync_changes') as sync_changes,
+      to_regclass('public.device_credentials') as device_credentials,
+      exists(select 1 from pg_attribute where attrelid='public.profiles'::regclass and attname='must_change_password' and not attisdropped) as password_change_ready,
+      exists(select 1 from pg_attribute where attrelid='public.devices'::regclass and attname='assigned_staff_id' and not attisdropped) as device_staff_ready
+  `)
+  const state = result.rows[0]
+  if (!state?.tenants || !state?.sync_changes || !state?.device_credentials || !state?.password_change_ready || !state?.device_staff_ready) throw new Error('Supabase schema migration has not been applied')
   return true
 }
 
@@ -114,11 +121,20 @@ export function toProfile(row) {
     active: row.active,
     permGrants: row.perm_grants || [],
     permDenies: row.perm_denies || [],
+    mustChangePassword: row.must_change_password === true,
   }
 }
 
 export async function getProfile(userId) {
-  const result = await query('select * from public.profiles where id = $1', [userId])
+  const result = await query(`
+    select p.*,
+      coalesce(
+        (select array_agg(pr.role order by pr.role) from public.profile_roles pr where pr.user_id = p.id and pr.hospital_id is not distinct from p.hospital_id),
+        p.roles
+      ) as roles
+    from public.profiles p
+    where p.id = $1
+  `, [userId])
   return toProfile(result.rows[0])
 }
 
@@ -206,10 +222,10 @@ export async function findStaffByPhone(phone) {
 export async function writeProfile(client, profile) {
   const roles = Array.isArray(profile.roles) ? profile.roles : []
   await client.query(`
-    insert into public.profiles (id, hospital_id, branch_id, email, name, phone, roles, active, perm_grants, perm_denies)
-    values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-    on conflict (id) do update set hospital_id = excluded.hospital_id, branch_id = excluded.branch_id, email = excluded.email, name = excluded.name, phone = excluded.phone, roles = excluded.roles, active = excluded.active, perm_grants = excluded.perm_grants, perm_denies = excluded.perm_denies, updated_at = now()
-  `, [profile.id, profile.tenantId || null, profile.branchId || null, profile.email, profile.name || '', profile.phone || null, roles, profile.active !== false, profile.permGrants || [], profile.permDenies || []])
+    insert into public.profiles (id, hospital_id, branch_id, email, name, phone, roles, active, perm_grants, perm_denies, must_change_password)
+    values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,coalesce($11,false))
+    on conflict (id) do update set hospital_id = excluded.hospital_id, branch_id = excluded.branch_id, email = excluded.email, name = excluded.name, phone = excluded.phone, roles = excluded.roles, active = excluded.active, perm_grants = excluded.perm_grants, perm_denies = excluded.perm_denies, must_change_password = coalesce($11,public.profiles.must_change_password), updated_at = now()
+  `, [profile.id, profile.tenantId || null, profile.branchId || null, profile.email, profile.name || '', profile.phone || null, roles, profile.active !== false, profile.permGrants || [], profile.permDenies || [], profile.mustChangePassword ?? null])
   await client.query('delete from public.profile_roles where user_id = $1', [profile.id])
   for (const role of roles) {
     const id = `${profile.id}:${profile.tenantId || 'platform'}:${role}`

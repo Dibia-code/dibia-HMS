@@ -36,7 +36,11 @@ export default defineConfig({
   ],
   resolve: {
     // Match the editor's @/* alias.
-    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+    alias: [
+      { find: /^react$/, replacement: fileURLToPath(new URL('./node_modules/react/index.js', import.meta.url)) },
+      { find: /^react-router-dom$/, replacement: fileURLToPath(new URL('./node_modules/react-router-dom/dist/index.js', import.meta.url)) },
+      { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
+    ],
   },
   server: {
     port: 5173,

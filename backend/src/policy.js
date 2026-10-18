@@ -28,6 +28,9 @@ const ROLE_PERMISSIONS = {
 }
 
 const REQUIRED_BY_ENTITY = {
+  branches: ['branches.manage'],
+  staff: ['staff.manage'],
+  staff_roles: ['staff.manage'],
   patients: ['patients.manage'],
   visits: ['patients.manage', 'queue.manage'],
   appointments: ['patients.manage', 'queue.manage'],
@@ -71,7 +74,7 @@ export function sanitizeSyncPayload(value, depth = 0) {
 
 export function canWriteEntity({ entity, operation, roles = [], grants = [], denies = [] }) {
   const admin = roles.some((role) => ['facility_admin', 'ceo_owner', 'super_admin'].includes(role))
-  if (operation === 'delete' && !admin) return false
+  if (operation === 'delete' && !admin && !['staff', 'staff_roles'].includes(entity)) return false
   if (entity === 'audit_log') return operation === 'create'
   const required = REQUIRED_BY_ENTITY[entity]
   if (!required) return false
@@ -80,4 +83,12 @@ export function canWriteEntity({ entity, operation, roles = [], grants = [], den
   for (const permission of grants) if (typeof permission === 'string') held.add(permission)
   for (const permission of denies) held.delete(permission)
   return required.some((permission) => held.has(permission))
+}
+
+export function hasPermission({ permission, roles = [], grants = [], denies = [] }) {
+  const held = new Set()
+  for (const role of roles) for (const value of ROLE_PERMISSIONS[role] || []) held.add(value)
+  for (const value of grants) if (typeof value === 'string') held.add(value)
+  for (const value of denies) held.delete(value)
+  return held.has(permission)
 }

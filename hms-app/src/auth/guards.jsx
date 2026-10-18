@@ -24,10 +24,11 @@ function Splash() {
 // Gate 1 — authentication. Unauthenticated users go to /login, remembering the
 // page they wanted so login can send them back.
 export function RequireAuth() {
-  const { isAuthed, restoring } = useAuth()
+  const { isAuthed, restoring, user } = useAuth()
   const location = useLocation()
   if (restoring) return <Splash />
   if (!isAuthed) return <Navigate to="/login" replace state={{ from: location }} />
+  if (user?.mustChangePassword && !user.passwordChangeSkipped) return <Navigate to="/change-password" replace />
   return <Outlet />
 }
 

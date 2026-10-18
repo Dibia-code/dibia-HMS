@@ -37,6 +37,10 @@ export default function Login() {
   // Already signed in? Skip the form.
   useEffect(() => {
     if (isAuthed && user?.hospitalSlug) {
+      if (user.mustChangePassword && !user.passwordChangeSkipped) {
+        navigate('/change-password', { replace: true })
+        return
+      }
       navigate(`/${user.hospitalSlug}/${currentLanding()}`, { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -52,6 +56,10 @@ export default function Login() {
     setError('')
     try {
       const session = await login(em, password)
+      if (session.mustChangePassword) {
+        navigate('/change-password', { replace: true })
+        return
+      }
       const perms = permissionsFor(session.roles)
       const landing = landingPath(perms)
       const from = location.state?.from?.pathname

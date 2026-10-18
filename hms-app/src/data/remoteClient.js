@@ -1,5 +1,6 @@
 // Backend API client for tenant-scoped sync and snapshot hydration.
 import { apiBase } from '@/lib/apiBase'
+import { activeDeviceHeaders } from '@/lib/deviceCredential'
 
 export class RemoteApiClient {
   constructor() {
@@ -21,11 +22,11 @@ export class RemoteApiClient {
   }
 
   async request(url, options) {
-    const send = () => fetch(url, { ...options, headers: { ...options.headers, ...(this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}) } })
+    const send = () => fetch(url, { ...options, headers: { ...activeDeviceHeaders(), ...options.headers, ...(this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}) } })
     let response = await send()
     if (response.status === 401 && this.hasEndpoint) {
       if (!this.refreshPromise) {
-        this.refreshPromise = fetch(`${this.baseUrl}/auth/refresh`, { method: 'POST', credentials: 'include' })
+        this.refreshPromise = fetch(`${this.baseUrl}/auth/refresh`, { method: 'POST', credentials: 'include', headers: activeDeviceHeaders() })
           .then(async (refresh) => ({ ok: refresh.ok, session: await refresh.json().catch(() => ({})) }))
           .finally(() => { this.refreshPromise = null })
       }
@@ -35,6 +36,10 @@ export class RemoteApiClient {
         response = await send()
       }
       if (response.status === 401) window.dispatchEvent(new CustomEvent('dibia:session-expired'))
+    }
+    if (response.status === 403) {
+      const result = await response.clone().json().catch(() => ({}))
+      if (result.code === 'DEVICE_ACCESS_REQUIRED') window.dispatchEvent(new CustomEvent('dibia:session-expired'))
     }
     return response
   }
@@ -53,10 +58,6 @@ export class RemoteApiClient {
     })
     const result = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(result.message || `Sync failed (${response.status})`)
-    if (Array.isArray(result.rejected) && result.rejected.length) {
-      const reason = result.rejected[0]?.message || 'The server rejected a local change'
-      throw new Error(`Sync needs attention: ${reason}`)
-    }
     return result
   }
 

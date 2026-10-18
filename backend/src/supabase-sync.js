@@ -3,6 +3,32 @@ import { canWriteEntity, sanitizeSyncPayload } from './policy.js'
 
 const tenantEntities = ['hospitals', 'branches', 'staff', 'staff_roles', 'patients', 'visits', 'appointments', 'payments', 'sales', 'products', 'batches', 'stock_movements', 'prescriptions', 'dispensings', 'refunds', 'expenses', 'customers', 'suppliers', 'purchase_orders', 'transfers', 'stock_counts', 'hmo_claims', 'devices', 'shift_reports', 'audit_log', 'complaints', 'hr_actions', 'staff_payments', 'settings']
 
+async function existingBootstrapCreate(entity, tenantId, recordId, payload) {
+  if (entity === 'hospitals' && recordId === tenantId) {
+    return (await query('select 1 from public.tenants where id = $1', [tenantId])).rowCount > 0
+  }
+  if (entity === 'branches') return Boolean(await getBranch(tenantId, recordId))
+  if (entity === 'staff') {
+    const staff = await getStaff(tenantId, recordId)
+    return Boolean(staff && (!payload.email || staff.email?.toLowerCase() === String(payload.email).toLowerCase()))
+  }
+  if (entity === 'staff_roles') {
+    return (await query('select 1 from public.staff_roles where hospital_id=$1 and id=$2 and staff_id=$3 and role=$4', [tenantId, recordId, payload.staffId, payload.role])).rowCount > 0
+  }
+  return false
+}
+
+async function acknowledgeExistingCreate(opId, tenantId, actorId) {
+  return transaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [`sync:${tenantId}:${opId}`])
+    const prior = await client.query('select result from public.sync_operations where op_id = $1 and hospital_id = $2', [opId, tenantId])
+    if (prior.rowCount) return prior.rows[0].result || { acked: true }
+    const result = { acked: true }
+    await client.query('insert into public.sync_operations (op_id,hospital_id,actor_id,result) values ($1,$2,$3,$4::jsonb)', [opId, tenantId, actorId, JSON.stringify(result)])
+    return result
+  })
+}
+
 export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntities, timestamp }) {
   const actor = await getProfile(actorId)
   if (!actor || actor.active === false || actor.tenantId !== tenantId) throw new Error('Active hospital staff session required')
@@ -10,7 +36,9 @@ export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntitie
   const grants = Array.isArray(actor.permGrants) ? actor.permGrants : []
   const denies = Array.isArray(actor.permDenies) ? actor.permDenies : []
   const admin = roles.some((role) => ['facility_admin', 'ceo_owner', 'super_admin'].includes(role))
-  const elevated = new Set(['hospitals', 'branches', 'staff', 'staff_roles', 'settings'])
+  const adminOnly = new Set(['hospitals'])
+  const elevatedRoles = new Set(['facility_admin', 'ceo_owner', 'super_admin'])
+  const adminOnlyPermissions = new Set(['dashboard.admin', 'staff.manage', 'settings.manage', 'subscription.manage', 'ceo.view'])
   const acked = []
   const rejected = []
 
@@ -22,14 +50,6 @@ export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntitie
       rejected.push({ opId, code: 'validation_error', message: 'Invalid operation or entity', retryable: false })
       continue
     }
-    if (elevated.has(entity) && !admin) {
-      rejected.push({ opId, code: 'forbidden', message: 'Hospital admin permission is required for this record', retryable: false })
-      continue
-    }
-    if (!elevated.has(entity) && !canWriteEntity({ entity, operation: action, roles, grants, denies })) {
-      rejected.push({ opId, code: 'forbidden', message: 'Your role does not have permission to change this record', retryable: false })
-      continue
-    }
     const recordId = String(operation.recordId || operation.payload?.id || '')
     if (!recordId || recordId.length > 200 || !operation.payload || typeof operation.payload !== 'object' || Array.isArray(operation.payload)) {
       rejected.push({ opId, code: 'validation_error', message: 'recordId is required', retryable: false })
@@ -37,6 +57,28 @@ export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntitie
     }
     if (operation.payload.hospitalId && operation.payload.hospitalId !== tenantId) {
       rejected.push({ opId, code: 'forbidden', message: 'Record belongs to a different hospital', retryable: false })
+      continue
+    }
+    if (action === 'create' && ['hospitals', 'branches', 'staff', 'staff_roles'].includes(entity) && await existingBootstrapCreate(entity, tenantId, recordId, operation.payload)) {
+      const result = await acknowledgeExistingCreate(opId, tenantId, actorId)
+      if (result.acked) acked.push(opId)
+      else rejected.push({ opId, ...result.rejected })
+      continue
+    }
+    if (adminOnly.has(entity) && !admin) {
+      rejected.push({ opId, code: 'forbidden', message: 'Hospital admin permission is required for this record', retryable: false })
+      continue
+    }
+    if (!adminOnly.has(entity) && !canWriteEntity({ entity, operation: action, roles, grants, denies })) {
+      rejected.push({ opId, code: 'forbidden', message: 'Your role does not have permission to change this record', retryable: false })
+      continue
+    }
+    if (!admin && entity === 'staff_roles' && elevatedRoles.has(operation.payload?.role)) {
+      rejected.push({ opId, code: 'forbidden', message: 'Only hospital administrators can assign administrator roles', retryable: false })
+      continue
+    }
+    if (!admin && entity === 'staff' && [...(operation.payload?.permGrants || [])].some((permission) => adminOnlyPermissions.has(permission))) {
+      rejected.push({ opId, code: 'forbidden', message: 'Only hospital administrators can grant administrator permissions', retryable: false })
       continue
     }
     if (operation.payload.actorId && operation.payload.actorId !== actorId) {

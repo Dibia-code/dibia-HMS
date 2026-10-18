@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken'
 import { query, transaction, supabaseStatus, checkSupabaseDatabase, getProfile, getPlatformProfile, getTenant, listTenants, updateTenant, getBranch, listBranches, getStaff, listStaff, findStaffByEmail, findStaffByPhone, writeProfile, writeStaff, saveDomainRecord, getDomainRecord, listDomainRecords, appendSyncChange } from './supabase-store.js'
 import { createSupabaseUser, deleteSupabaseUser, findSupabaseUserByEmail, updateSupabaseUserPassword, verifySupabaseAccessToken, signInSupabasePassword, refreshSupabaseSession, revokeSupabaseSession, sendSupabasePasswordReset, updateSupabasePassword, supabaseAuthReady } from './supabase-auth.js'
 import { applySupabaseSync, readSupabaseChanges, readSupabaseSnapshot } from './supabase-sync.js'
+import { hasPermission } from './policy.js'
 
 const production = process.env.NODE_ENV === 'production'
 const PORT = Number(process.env.PORT || 4000)
@@ -55,7 +56,7 @@ app.use((req, res, next) => {
   res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Cache-Control': 'no-store', ...(production ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}) })
   next()
 })
-app.use(cors({ origin: (origin, callback) => !origin || origins.includes(origin) ? callback(null, true) : callback(new Error('Origin not allowed')), credentials: true, methods: ['GET','POST','PATCH','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','Authorization'] }))
+app.use(cors({ origin: (origin, callback) => !origin || origins.includes(origin) ? callback(null, true) : callback(new Error('Origin not allowed')), credentials: true, methods: ['GET','POST','PATCH','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','Authorization','X-Dibia-Device-Key'] }))
 app.use(express.json({ limit: '256kb', strict: true }))
 app.use(cookieParser())
 app.use((req, res, next) => {
@@ -71,7 +72,7 @@ function clearCookie(res, name) { res.clearCookie(name, { httpOnly: true, sameSi
 function getBearer(req) { return String(req.get('authorization') || '').replace(/^Bearer\s+/i, '') }
 function session(profile, tenant, branch, accessToken) {
   const roles = Array.isArray(profile.roles) ? profile.roles : ['facility_admin']
-  return { accessToken, user: { id: profile.id, name: profile.name, email: profile.email, roles, hospitalId: profile.tenantId, hospitalSlug: tenant.slug, hospitalName: tenant.name, branchId: profile.branchId || branch?.id || null }, tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name, logoUrl: tenant.logoUrl || null }, branch }
+  return { accessToken, user: { id: profile.id, name: profile.name, email: profile.email, roles, permGrants: profile.permGrants || [], permDenies: profile.permDenies || [], mustChangePassword: profile.mustChangePassword === true, hospitalId: profile.tenantId, hospitalSlug: tenant.slug, hospitalName: tenant.name, branchId: profile.branchId || branch?.id || null }, tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name, logoUrl: tenant.logoUrl || null }, branch }
 }
 
 async function rateLimit(req, res, next) {
@@ -94,7 +95,24 @@ async function rateLimit(req, res, next) {
   } catch (error) { next(error) }
 }
 
-async function hospitalAccount(accessToken) {
+async function verifyDeviceAccess(tenantId, authUserId, deviceKey) {
+  const result = await query(`
+    select s.id as staff_id,
+      exists(select 1 from public.devices d where d.hospital_id=s.hospital_id and d.assigned_staff_id=s.id and not d.is_deleted) as device_required,
+      exists(select 1 from public.devices d join public.device_credentials c on c.hospital_id=d.hospital_id and c.device_id=d.id where d.hospital_id=s.hospital_id and d.assigned_staff_id=s.id and d.status='approved' and not d.is_deleted and c.credential_hash=$3) as device_approved
+    from public.staff s
+    where s.hospital_id=$1 and s.auth_user_id=$2 and not s.is_deleted
+    limit 1
+  `, [tenantId, authUserId, deviceKey ? sha256(deviceKey) : ''])
+  const staff = result.rows[0]
+  if (!staff?.device_required || staff.device_approved) return
+  const error = new Error('This account requires its approved hospital device to sign in')
+  error.code = 'DEVICE_ACCESS_REQUIRED'
+  error.status = 403
+  throw error
+}
+
+async function hospitalAccount(accessToken, deviceKey = '') {
   const authUser = await verifySupabaseAccessToken(accessToken)
   const profile = await getProfile(authUser.uid)
   if (!profile || profile.active === false || !profile.tenantId) throw new Error('Hospital account profile not found')
@@ -105,6 +123,7 @@ async function hospitalAccount(accessToken) {
     error.code = 'HOSPITAL_NOT_ACTIVE'
     throw error
   }
+  await verifyDeviceAccess(profile.tenantId, authUser.uid, deviceKey)
   const branch = profile.branchId ? await getBranch(profile.tenantId, profile.branchId) : null
   return { authUser, profile, tenant, branch }
 }
@@ -118,10 +137,10 @@ async function platformAccount(accessToken) {
 
 async function verifyHospital(req, res, next) {
   try {
-    const account = await hospitalAccount(getBearer(req))
+    const account = await hospitalAccount(getBearer(req), String(req.get('x-dibia-device-key') || ''))
     req.auth = { sub: account.profile.id, tenantId: account.profile.tenantId, roles: account.profile.roles, branchId: account.profile.branchId, permGrants: account.profile.permGrants, permDenies: account.profile.permDenies }
     next()
-  } catch (error) { res.status(error.code === 'HOSPITAL_NOT_ACTIVE' ? 403 : 401).json({ ...(error.code === 'HOSPITAL_NOT_ACTIVE' ? { code: error.message.includes('awaiting approval') ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE' } : {}), message: error.code === 'HOSPITAL_NOT_ACTIVE' ? error.message : 'Access token expired or invalid' }) }
+  } catch (error) { const denied = error.code === 'HOSPITAL_NOT_ACTIVE' || error.code === 'DEVICE_ACCESS_REQUIRED'; res.status(denied ? 403 : 401).json({ ...(denied ? { code: error.code === 'HOSPITAL_NOT_ACTIVE' ? error.message.includes('awaiting approval') ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE' : error.code } : {}), message: denied ? error.message : 'Access token expired or invalid' }) }
 }
 
 async function verifyPlatform(req, res, next) {
@@ -189,7 +208,7 @@ app.post('/auth/register', rateLimit, asyncRoute(async (req, res) => {
     user = await createSupabaseUser({ email, password, displayName: ownerName, phoneNumber: /^\+[1-9]\d{7,14}$/.test(phone) ? phone : undefined })
     const timestamp = now()
     const branch = { id: branchId, hospitalId: tenantId, name: 'Main Branch', address, isMain: true, createdAt: timestamp }
-    const profile = { id: user.uid, tenantId, branchId, name: ownerName, email, phone, roles: ['facility_admin'], active: true }
+    const profile = { id: user.uid, tenantId, branchId, name: ownerName, email, phone, roles: ['facility_admin'], active: true, mustChangePassword: false }
     await transaction(async (client) => {
       const slugResult = await client.query("select $1 || case when count(*) = 0 then '' else '-' || (count(*) + 1)::text end as slug from public.tenants where slug = $1 or slug like $1 || '-%'", [base])
       tenantSlug = slugResult.rows[0].slug.slice(0, 50)
@@ -210,8 +229,8 @@ app.post('/auth/register', rateLimit, asyncRoute(async (req, res) => {
   }
 }))
 
-async function sendHospitalSession(res, accessToken, refreshToken) {
-  const account = await hospitalAccount(accessToken)
+async function sendHospitalSession(res, accessToken, refreshToken, deviceKey = '') {
+  const account = await hospitalAccount(accessToken, deviceKey)
   setCookie(res, 'dibia_refresh', refreshToken)
   return session(account.profile, account.tenant, account.branch, accessToken)
 }
@@ -226,24 +245,42 @@ app.post('/auth/login', rateLimit, asyncRoute(async (req, res) => {
   let identifier = String(req.body?.identifier || '').trim()
   const password = String(req.body?.password || '')
   if (!identifier.includes('@')) { const staff = await findStaffByPhone(identifier); if (!staff) return apiError(res, 'Invalid login details', 401); identifier = staff.email || identifier }
+  let signed
   try {
-    const signed = await signInSupabasePassword(identifier.toLowerCase(), password)
-    const result = req.body?.audience === 'platform' ? await sendPlatformSession(res, signed.accessToken, signed.refreshToken) : await sendHospitalSession(res, signed.accessToken, signed.refreshToken)
-    return res.json(result)
+    signed = await signInSupabasePassword(identifier.toLowerCase(), password)
   } catch (error) {
     if (error.status === 429) return apiError(res, 'Too many sign-in attempts. Try again later.', 429)
+    if (error.status === 401) return apiError(res, 'Invalid login details', 401)
+    console.error('Hospital credential verification failed', { requestId: req.requestId, ...errorDiagnostics(error) })
+    return apiError(res, 'Authentication service is temporarily unavailable.', 503)
+  }
+  try { return res.json(await sendHospitalSession(res, signed.accessToken, signed.refreshToken, String(req.get('x-dibia-device-key') || ''))) }
+  catch (error) {
     if (error.code === 'HOSPITAL_NOT_ACTIVE') return res.status(403).json({ code: error.message.includes('awaiting approval') ? 'REGISTRATION_PENDING' : 'HOSPITAL_INACTIVE', message: error.message })
-    return apiError(res, error.status >= 500 ? 'Authentication service is temporarily unavailable.' : 'Invalid login details', error.status >= 500 ? 503 : 401)
+    if (error.code === 'DEVICE_ACCESS_REQUIRED') return res.status(403).json({ code: error.code, message: error.message })
+    console.error('Hospital profile lookup failed after sign-in', { requestId: req.requestId, ...errorDiagnostics(error) })
+    if (error.message === 'Hospital account profile not found' || error.message === 'Hospital tenant not found') return apiError(res, 'Your credentials are valid, but hospital access is not set up for this account. Contact your hospital administrator.', 403)
+    return apiError(res, 'Your credentials were accepted, but hospital access could not be loaded. Try again later.', 503)
   }
 }))
 
 app.post('/auth/console/login', rateLimit, asyncRoute(async (req, res) => {
+  let signed
+  try { signed = await signInSupabasePassword(String(req.body?.email || '').trim().toLowerCase(), String(req.body?.password || '')) }
+  catch (error) {
+    if (error.status === 401) return apiError(res, 'Invalid Super Admin email or password', 401)
+    console.error('Console credential verification failed', { requestId: req.requestId, ...errorDiagnostics(error) })
+    return apiError(res, 'Authentication service is temporarily unavailable.', 503)
+  }
   try {
-    const signed = await signInSupabasePassword(String(req.body?.email || '').trim().toLowerCase(), String(req.body?.password || ''))
     const result = await sendPlatformSession(res, signed.accessToken, signed.refreshToken, 'dibia_console_refresh')
     await platformAudit(result.user.id, 'auth.login', 'platform_user', result.user.id)
     return res.json(result)
-  } catch (error) { return apiError(res, error.status >= 500 ? 'Authentication service is temporarily unavailable.' : 'Invalid Super Admin email or password', error.status >= 500 ? 503 : 401) }
+  } catch (error) {
+    console.error('Console profile lookup failed after sign-in', { requestId: req.requestId, ...errorDiagnostics(error) })
+    if (error.message === 'Platform account not found') return apiError(res, 'Your credentials are valid, but this account does not have platform administrator access.', 403)
+    return apiError(res, 'Your credentials were accepted, but console access could not be loaded. Try again later.', 503)
+  }
 }))
 
 app.post('/auth/refresh', asyncRoute(async (req, res) => {
@@ -254,7 +291,7 @@ app.post('/auth/refresh', asyncRoute(async (req, res) => {
   try {
     const profile = await getProfile(refreshed.user.uid)
     if (profile?.roles?.includes('platform_super_admin')) return res.json(await sendPlatformSession(res, refreshed.accessToken, refreshed.refreshToken))
-    return res.json(await sendHospitalSession(res, refreshed.accessToken, refreshed.refreshToken))
+    return res.json(await sendHospitalSession(res, refreshed.accessToken, refreshed.refreshToken, String(req.get('x-dibia-device-key') || '')))
   } catch { clearCookie(res, 'dibia_refresh'); return apiError(res, 'Refresh session expired', 401) }
 }))
 
@@ -281,8 +318,21 @@ app.post('/auth/password/update', rateLimit, asyncRoute(async (req, res) => {
   const token = getBearer(req), password = String(req.body?.password || '')
   if (!token) return apiError(res, 'Password reset session is invalid or expired.', 401)
   if (password.length < minPasswordLength) return apiError(res, `Password must be at least ${minPasswordLength} characters.`, 400)
-  try { await updateSupabasePassword(token, password); return res.json({ message: 'Password updated. You can now sign in.' }) }
+  try { const user = await updateSupabasePassword(token, password); await query('update public.profiles set must_change_password=false,updated_at=now() where id=$1', [user.uid]); return res.json({ message: 'Password updated. You can now sign in.' }) }
   catch (error) { console.error('Password update failed', { requestId: req.requestId, ...errorDiagnostics(error) }); return apiError(res, error.status === 401 ? 'Password reset session is invalid or expired.' : 'Password could not be updated. Request a new reset link.', error.status === 401 ? 401 : 503) }
+}))
+
+app.post('/auth/password/change', auth, asyncRoute(async (req, res) => {
+  const password = String(req.body?.password || '')
+  if (password.length < minPasswordLength) return apiError(res, `Password must be at least ${minPasswordLength} characters.`, 400)
+  try {
+    await updateSupabaseUserPassword(req.auth.sub, password)
+    await query('update public.profiles set must_change_password=false,updated_at=now() where id=$1', [req.auth.sub])
+    return res.json({ message: 'Your password was changed.' })
+  } catch (error) {
+    console.error('Temporary password change failed', { requestId: req.requestId, ...errorDiagnostics(error) })
+    return apiError(res, 'Password could not be changed. Try again.', 503)
+  }
 }))
 
 app.get('/me', auth, asyncRoute(async (req, res) => {
@@ -321,8 +371,10 @@ app.post('/staff/:staffId/access-code', auth, requireRole('facility_admin','ceo_
   const name = String(staff.name || '').trim()
   const accessCode = String(req.body?.accessCode || '')
   const roles = Array.isArray(req.body?.roles) ? req.body.roles : []
+  const createDeviceLink = req.body?.createDeviceLink === true
+  const deviceName = String(req.body?.deviceName || '').trim().slice(0, 100)
   const supported = new Set(['super_admin','facility_admin','ceo_owner','branch_manager','pharmacist','superintendent_pharmacist','receptionist','cashier','dispenser','pharmacy_cashier','inventory_officer','sales_staff','accountant','warehouse_officer','doctor','nurse','laboratory_technician'])
-  if (!staffId || !name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || accessCode.length < minPasswordLength || !roles.length || roles.some((row) => !row?.id || !supported.has(row.role))) return apiError(res, `Staff name, email, supported roles, and an access code of at least ${minPasswordLength} characters are required`, 400)
+  if (!staffId || !name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || accessCode.length < minPasswordLength || !roles.length || roles.some((row) => !row?.id || !supported.has(row.role)) || createDeviceLink && !deviceName) return apiError(res, `Staff name, email, supported roles, and an access code of at least ${minPasswordLength} characters are required`, 400)
   const branchId = staff.branchId || null
   if (branchId && !await getBranch(req.auth.tenantId, branchId)) return apiError(res, 'Branch does not belong to this hospital', 400)
   const existingStaff = await getStaff(req.auth.tenantId, staffId)
@@ -339,7 +391,8 @@ app.post('/staff/:staffId/access-code', auth, requireRole('facility_admin','ceo_
       created = true
     }
     const roleNames = [...new Set(roles.map((row) => row.role))]
-    const profile = { id: user.uid, tenantId: req.auth.tenantId, branchId, name, email, phone: String(staff.phone || ''), roles: roleNames, active: staff.active !== false, permGrants: staff.permGrants || [], permDenies: staff.permDenies || [] }
+    const profile = { id: user.uid, tenantId: req.auth.tenantId, branchId, name, email, phone: String(staff.phone || ''), roles: roleNames, active: staff.active !== false, permGrants: staff.permGrants || [], permDenies: staff.permDenies || [], mustChangePassword: true }
+    let deviceInvitation = null
     await transaction(async (client) => {
       await writeProfile(client, profile)
       await writeStaff(client, { ...staff, id: staffId, hospitalId: req.auth.tenantId, authUserId: user.uid, branchId, name, email, roles: roleNames, active: profile.active })
@@ -347,13 +400,58 @@ app.post('/staff/:staffId/access-code', auth, requireRole('facility_admin','ceo_
       for (const row of roles) await client.query('insert into public.staff_roles (id,hospital_id,staff_id,role) values ($1,$2,$3,$4) on conflict (id) do update set role=excluded.role', [row.id, req.auth.tenantId, staffId, row.role])
       await appendSyncChange(client, req.auth.tenantId, 'staff', staffId, 'update', { ...staff, id: staffId, hospitalId: req.auth.tenantId, authUserId: user.uid }, req.auth.sub)
       for (const row of roles) await appendSyncChange(client, req.auth.tenantId, 'staff_roles', row.id, 'create', { ...row, hospitalId: req.auth.tenantId, staffId }, req.auth.sub)
+      if (createDeviceLink) {
+        const deviceId = id('device')
+        const token = crypto.randomBytes(32).toString('base64url')
+        const device = { id: deviceId, hospitalId: req.auth.tenantId, name: deviceName, assignedStaffId: staffId, status: 'invited', createdBy: req.auth.sub, createdAt: now(), updatedAt: now() }
+        await saveDomainRecord(client, req.auth.tenantId, 'devices', deviceId, device)
+        await client.query('insert into public.device_invites (token_hash,hospital_id,device_id) values ($1,$2,$3)', [sha256(token), req.auth.tenantId, deviceId])
+        await appendSyncChange(client, req.auth.tenantId, 'devices', deviceId, 'create', device, req.auth.sub)
+        deviceInvitation = { device, token }
+      }
     })
     await recordAudit(req.auth.tenantId, req.auth.sub, 'staff.sign_in_created', 'staff', staffId)
-    return res.status(201).json({ message: 'Staff sign-in is ready. Share the access code securely and ask them to change it using Forgot password.' })
+    return res.status(201).json({ message: 'Staff sign-in is ready. Ask them to change the temporary password after signing in.', deviceInvitation })
   } catch (error) {
     if (created && user?.uid) await deleteSupabaseUser(user.uid).catch(() => {})
     throw error
   }
+}))
+
+app.patch('/staff/:staffId/access', auth, (req, res, next) => {
+  const admin = req.auth.roles.some((role) => ['facility_admin','ceo_owner','super_admin'].includes(role))
+  if (admin || hasPermission({ permission: 'staff.manage', roles: req.auth.roles, grants: req.auth.permGrants, denies: req.auth.permDenies })) return next()
+  return res.status(403).json({ message: 'You do not have permission to manage staff' })
+}, asyncRoute(async (req, res) => {
+  const staffId = String(req.params.staffId || '').trim()
+  const staff = await getStaff(req.auth.tenantId, staffId)
+  if (!staff) return apiError(res, 'Staff member not found in this hospital', 404)
+  if (!staff.authUserId) return apiError(res, 'Create a staff sign-in account before changing access', 409)
+  const roles = Array.isArray(req.body?.roles) ? req.body.roles : []
+  const supported = new Set(['super_admin','facility_admin','ceo_owner','branch_manager','pharmacist','superintendent_pharmacist','receptionist','cashier','dispenser','pharmacy_cashier','inventory_officer','sales_staff','accountant','warehouse_officer','doctor','nurse','laboratory_technician'])
+  if (!roles.length || roles.some((row) => !row?.id || !supported.has(row.role))) return apiError(res, 'Choose at least one supported staff role', 400)
+  const elevated = new Set(['facility_admin','ceo_owner','super_admin'])
+  if (roles.some((row) => elevated.has(row.role)) && !req.auth.roles.some((role) => elevated.has(role))) return apiError(res, 'Only hospital administrators can assign administrator roles', 403)
+  const roleNames = [...new Set(roles.map((row) => row.role))]
+  if (roleNames.length !== roles.length) return apiError(res, 'Each staff role can only be assigned once', 400)
+  const permGrants = Array.isArray(req.body?.permGrants) ? req.body.permGrants.filter((value) => typeof value === 'string').slice(0, 100) : []
+  const permDenies = Array.isArray(req.body?.permDenies) ? req.body.permDenies.filter((value) => typeof value === 'string').slice(0, 100) : []
+  const adminOnlyPermissions = new Set(['dashboard.admin', 'staff.manage', 'settings.manage', 'subscription.manage', 'ceo.view'])
+  if (!req.auth.roles.some((role) => elevated.has(role)) && permGrants.some((permission) => adminOnlyPermissions.has(permission))) return apiError(res, 'Only hospital administrators can grant administrator permissions', 403)
+  const previous = await query('select id,role from public.staff_roles where hospital_id=$1 and staff_id=$2', [req.auth.tenantId, staffId])
+  const nextStaff = { ...staff, roles: roleNames, permGrants, permDenies, updatedAt: now() }
+  await transaction(async (client) => {
+    await writeProfile(client, { id: staff.authUserId, tenantId: req.auth.tenantId, branchId: staff.branchId, name: staff.name, email: staff.email, phone: staff.phone, roles: roleNames, active: staff.active !== false, permGrants, permDenies })
+    await client.query('update public.staff set attributes=attributes || $3::jsonb,updated_at=now() where hospital_id=$1 and id=$2', [req.auth.tenantId, staffId, JSON.stringify({ permGrants, permDenies })])
+    await client.query('delete from public.staff_roles where hospital_id=$1 and staff_id=$2', [req.auth.tenantId, staffId])
+    for (const row of roles) await client.query('insert into public.staff_roles (id,hospital_id,staff_id,role) values ($1,$2,$3,$4)', [row.id, req.auth.tenantId, staffId, row.role])
+    await appendSyncChange(client, req.auth.tenantId, 'staff', staffId, 'update', { ...nextStaff, hospitalId: req.auth.tenantId }, req.auth.sub)
+    const wanted = new Set(roleNames)
+    for (const row of previous.rows) if (!wanted.has(row.role)) await appendSyncChange(client, req.auth.tenantId, 'staff_roles', row.id, 'delete', null, req.auth.sub)
+    for (const row of roles) await appendSyncChange(client, req.auth.tenantId, 'staff_roles', row.id, 'create', { ...row, hospitalId: req.auth.tenantId, staffId }, req.auth.sub)
+  })
+  await recordAudit(req.auth.tenantId, req.auth.sub, 'staff.access_updated', 'staff', staffId, { roles: roleNames })
+  res.json({ staff: nextStaff })
 }))
 
 async function tenantSummary(tenant) {
@@ -440,39 +538,226 @@ app.get('/platform/tenants/:tenantId/modules', platformAuth, asyncRoute(async (r
 app.patch('/platform/tenants/:tenantId/modules/:code', platformAuth, asyncRoute(async (req, res) => { const tenant = await getTenant(req.params.tenantId); const module = await query('select * from public.modules where code=$1', [req.params.code]); if (!tenant || !module.rowCount) return apiError(res, 'Tenant or module not found', 404); const item = module.rows[0], entitlement = req.body?.entitled !== false ? 'entitled' : 'revoked', activation = entitlement === 'revoked' || req.body?.enabled === false ? 'disabled' : 'enabled'; await transaction(async (client) => { await client.query('insert into public.module_entitlements (hospital_id,module_code,source,status,starts_at) values ($1,$2,$3,$4,now()) on conflict (hospital_id,module_code) do update set source=excluded.source,status=excluded.status,starts_at=excluded.starts_at,updated_at=now()', [tenant.id,item.code,String(req.body?.source || 'platform'),entitlement]); await client.query('insert into public.tenant_modules (hospital_id,module_code,status,activated_by,activated_at) values ($1,$2,$3,$4,case when $3=\'enabled\' then now() end) on conflict (hospital_id,module_code) do update set status=excluded.status,activated_by=excluded.activated_by,activated_at=excluded.activated_at', [tenant.id,item.code,activation,req.auth.sub]) }); await platformAudit(req.auth.sub, `tenant.module.${activation}`, 'tenant_module', `${tenant.id}:${item.code}`); res.json({ tenantId: tenant.id, moduleCode: item.code, moduleName: item.name, entitlementStatus: entitlement, activationStatus: activation }) }))
 app.get('/platform/tickets', platformAuth, asyncRoute(async (_req, res) => { const result = await query('select s.id,s.hospital_id as "hospitalId",t.name as "hospitalName",s.created_by as "createdBy",s.updated_by as "updatedBy",s.issue,s.priority,s.status,s.reply,s.created_at as "createdAt",s.updated_at as "updatedAt" from public.support_tickets s join public.tenants t on t.id=s.hospital_id order by s.created_at desc limit 500'); res.json({ tickets: result.rows }) }))
 app.patch('/platform/tickets/:id', platformAuth, asyncRoute(async (req, res) => { const current = await query('select * from public.support_tickets where id=$1', [req.params.id]); if (!current.rowCount) return apiError(res, 'Support ticket not found', 404); const ticket = current.rows[0], status = req.body?.status == null ? ticket.status : String(req.body.status); if (!['open','resolved'].includes(status)) return apiError(res, 'Invalid ticket status', 400); const reply = req.body?.reply == null ? ticket.reply : String(req.body.reply).trim().slice(0,5000); await query('update public.support_tickets set status=$2,reply=$3,updated_by=$4,updated_at=now() where id=$1', [ticket.id,status,reply,req.auth.sub]); await platformAudit(req.auth.sub, status === 'resolved' ? 'support.ticket.resolved' : 'support.ticket.replied', 'support_ticket', ticket.id); res.json({ id: ticket.id, hospitalId: ticket.hospital_id, issue: ticket.issue, priority: ticket.priority, status, reply }) }))
+app.get('/platform/feedback', platformAuth, asyncRoute(async (_req, res) => {
+  const result = await query(`select f.id,f.hospital_id as "hospitalId",t.name as "hospitalName",f.created_by as "createdBy",f.app,f.body as text,f.category,f.priority,f.status,f.context,f.created_at as "createdAt",f.updated_at as "updatedAt",coalesce((select json_agg(json_build_object('id',u.id,'kind',u.kind,'status',u.status,'text',u.body,'build',u.build,'createdAt',u.created_at) order by u.created_at) from public.feedback_updates u where u.feedback_id=f.id),'[]'::json) as updates from public.feedback_reports f join public.tenants t on t.id=f.hospital_id order by f.updated_at desc limit 1000`)
+  res.json({ feedback: result.rows })
+}))
+app.patch('/platform/feedback/:id', platformAuth, asyncRoute(async (req, res) => {
+  const statuses = ['Open','In progress','Partially addressed','Ready to retest','Resolved','Reopened']
+  const current = await query('select * from public.feedback_reports where id=$1', [req.params.id])
+  if (!current.rowCount) return apiError(res, 'Feedback report not found', 404)
+  const report = current.rows[0]
+  const status = String(req.body?.status || '')
+  const text = String(req.body?.text || '').trim().slice(0,5000)
+  const build = String(req.body?.build || '').trim().slice(0,120)
+  if (!statuses.includes(status) || !text) return apiError(res, 'A valid status and update description are required', 400)
+  if (status === 'Ready to retest' && (!build || build !== String(report.context?.build || ''))) return apiError(res, 'Ready to retest requires the exact build in the reviewer context', 409)
+  const feedback = await transaction(async (client) => {
+    const saved = await client.query('update public.feedback_reports set status=$2,updated_by=$3,updated_at=now() where id=$1 returning id,hospital_id as "hospitalId",app,body as text,category,priority,status,context,created_at as "createdAt",updated_at as "updatedAt"', [report.id,status,req.auth.sub])
+    await client.query("insert into public.feedback_updates (id,feedback_id,author_id,kind,status,body,build) values ($1,$2,$3,'developer',$4,$5,$6)", [id('feedback_update'),report.id,req.auth.sub,status,text,build])
+    return saved.rows[0]
+  })
+  await platformAudit(req.auth.sub, 'feedback.updated', 'feedback_report', report.id, { status, build })
+  const updates = await query('select id,kind,status,body as text,build,created_at as "createdAt" from public.feedback_updates where feedback_id=$1 order by created_at', [report.id])
+  res.json({ feedback: { ...feedback, updates:updates.rows } })
+}))
+app.post('/feedback', auth, asyncRoute(async (req, res) => {
+  const body = String(req.body?.text || '').trim().slice(0,5000)
+  const category = ['Bug','Improvement','Question','Works well'].includes(req.body?.category) ? req.body.category : 'Bug'
+  const priority = ['Blocking','Normal','Minor'].includes(req.body?.priority) ? req.body.priority : 'Normal'
+  const source = req.body?.context && typeof req.body.context === 'object' ? req.body.context : {}
+  const context = Object.fromEntries(['app','date','page','route','section','dialog','role','workspace','build','viewport','element'].filter((key) => source[key] != null).map((key) => [key, source[key]]))
+  if (!body) return apiError(res, 'Write feedback before sending it', 400)
+  const feedbackId = /^FB-[A-Z0-9-]{8,80}$/i.test(String(req.body?.id || '')) ? String(req.body.id) : `FB-${crypto.randomUUID().toUpperCase()}`
+  const appName = ['HMS','Console'].includes(req.body?.app) ? req.body.app : 'HMS'
+  try { await query('insert into public.feedback_reports (id,hospital_id,created_by,app,body,category,priority,status,context) values ($1,$2,$3,$4,$5,$6,$7,\'Open\',$8::jsonb)', [feedbackId,req.auth.tenantId,req.auth.sub,appName,body,category,priority,JSON.stringify(context)]) }
+  catch (error) {
+    if (error.code === '23505') {
+      const existing = await query('select id,hospital_id as "hospitalId",created_by as "createdBy",app,body as text,category,priority,status,context,created_at as "createdAt",updated_at as "updatedAt" from public.feedback_reports where id=$1 and hospital_id=$2 and created_by=$3', [feedbackId,req.auth.tenantId,req.auth.sub])
+      if (existing.rowCount) return res.status(200).json({ feedback: { ...existing.rows[0], updates: [] } })
+      return apiError(res, 'This feedback ID belongs to another report', 409)
+    }
+    throw error
+  }
+  await recordAudit(req.auth.tenantId,req.auth.sub,'feedback.created','feedback_report',feedbackId)
+  res.status(201).json({ feedback:{ id:feedbackId,hospitalId:req.auth.tenantId,createdBy:req.auth.sub,app:appName,text:body,category,priority,status:'Open',context,createdAt:now(),updatedAt:now(),updates:[] } })
+}))
+app.get('/feedback', auth, asyncRoute(async (req, res) => {
+  const result = await query(`select f.id,f.hospital_id as "hospitalId",f.created_by as "createdBy",f.app,f.body as text,f.category,f.priority,f.status,f.context,f.created_at as "createdAt",f.updated_at as "updatedAt",coalesce((select json_agg(json_build_object('id',u.id,'kind',u.kind,'status',u.status,'text',u.body,'build',u.build,'createdAt',u.created_at) order by u.created_at) from public.feedback_updates u where u.feedback_id=f.id),'[]'::json) as updates from public.feedback_reports f where f.hospital_id=$1 order by f.updated_at desc limit 500`, [req.auth.tenantId])
+  res.json({ feedback:result.rows })
+}))
+app.post('/feedback/:id/updates', auth, asyncRoute(async (req, res) => {
+  const report = await query('select id from public.feedback_reports where id=$1 and hospital_id=$2', [req.params.id,req.auth.tenantId])
+  if (!report.rowCount) return apiError(res, 'Feedback report not found', 404)
+  const text = String(req.body?.text || '').trim().slice(0,5000)
+  if (!text) return apiError(res, 'Additional information is required', 400)
+  await query("insert into public.feedback_updates (id,feedback_id,author_id,kind,body) values ($1,$2,$3,'reviewer_note',$4)", [id('feedback_update'),req.params.id,req.auth.sub,text])
+  await query('update public.feedback_reports set updated_at=now() where id=$1', [req.params.id])
+  res.status(201).json({ ok:true })
+}))
+app.post('/feedback/:id/retest', auth, asyncRoute(async (req, res) => {
+  const reportResult = await query('select * from public.feedback_reports where id=$1 and hospital_id=$2', [req.params.id,req.auth.tenantId])
+  if (!reportResult.rowCount) return apiError(res, 'Feedback report not found', 404)
+  const report = reportResult.rows[0]
+  const status = String(req.body?.status || '')
+  const text = String(req.body?.text || '').trim().slice(0,5000)
+  if (!['Resolved','Reopened'].includes(status) || report.status !== 'Ready to retest') return apiError(res, 'Only reports marked Ready to retest can be confirmed or reopened', 409)
+  if (status === 'Reopened' && !text) return apiError(res, 'Add evidence describing what is still happening', 400)
+  await transaction(async (client) => {
+    await client.query('update public.feedback_reports set status=$2,updated_by=$3,updated_at=now() where id=$1', [report.id,status,req.auth.sub])
+    await client.query("insert into public.feedback_updates (id,feedback_id,author_id,kind,status,body,build) values ($1,$2,$3,'retest',$4,$5,$6)", [id('feedback_update'),report.id,req.auth.sub,status,text,String(req.body?.build || '').slice(0,120)])
+  })
+  const saved = await query('select id,hospital_id as "hospitalId",app,body as text,category,priority,status,context,created_at as "createdAt",updated_at as "updatedAt" from public.feedback_reports where id=$1', [report.id])
+  const updates = await query('select id,kind,status,body as text,build,created_at as "createdAt" from public.feedback_updates where feedback_id=$1 order by created_at', [report.id])
+  res.json({ feedback:{ ...saved.rows[0],updates:updates.rows } })
+}))
+app.get('/messages', auth, asyncRoute(async (req, res) => {
+  const result = await query('select id,body,created_at as "sentAt" from public.platform_messages where hospital_id=$1 order by created_at desc limit 100', [req.auth.tenantId])
+  res.json({ messages:result.rows })
+}))
+app.get('/feedback/recipients', auth, asyncRoute(async (req, res) => {
+  const result = await query("select id,name from public.tenants where status='active' and id<>$1 order by name", [req.auth.tenantId])
+  res.json({ hospitals:result.rows })
+}))
+app.get('/feedback/messages', auth, asyncRoute(async (req, res) => {
+  const result = await query('select m.id,m.sender_hospital_id as "senderHospitalId",s.name as "senderHospital",m.recipient_hospital_id as "recipientHospitalId",r.name as "recipientHospital",m.sent_by as "sentBy",m.body,m.created_at as "sentAt" from public.feedback_messages m join public.tenants s on s.id=m.sender_hospital_id join public.tenants r on r.id=m.recipient_hospital_id where m.sender_hospital_id=$1 or m.recipient_hospital_id=$1 order by m.created_at desc limit 200', [req.auth.tenantId])
+  res.json({ messages:result.rows })
+}))
+app.post('/feedback/messages', auth, asyncRoute(async (req, res) => {
+  const recipientId = String(req.body?.recipientHospitalId || '')
+  const body = String(req.body?.body || '').trim().slice(0,3000)
+  if (!recipientId || recipientId === req.auth.tenantId) return apiError(res, 'Choose a different hospital as the recipient', 400)
+  if (!body) return apiError(res, 'Write a message before sending it', 400)
+  const recipient = await query("select id,name from public.tenants where id=$1 and status='active'", [recipientId])
+  if (!recipient.rowCount) return apiError(res, 'Recipient hospital is unavailable', 404)
+  const messageId = id('feedback_message')
+  await query('insert into public.feedback_messages (id,sender_hospital_id,recipient_hospital_id,sent_by,body) values ($1,$2,$3,$4,$5)', [messageId,req.auth.tenantId,recipientId,req.auth.sub,body])
+  const sender = await getTenant(req.auth.tenantId)
+  await recordAudit(req.auth.tenantId,req.auth.sub,'feedback.message.sent','feedback_message',messageId,{ recipientHospitalId:recipientId })
+  res.status(201).json({ message:{ id:messageId,senderHospitalId:req.auth.tenantId,senderHospital:sender?.name || '',recipientHospitalId:recipientId,recipientHospital:recipient.rows[0].name,sentBy:req.auth.sub,body,sentAt:now() } })
+}))
 app.get('/platform/messages', platformAuth, asyncRoute(async (_req, res) => { const result = await query('select m.id,m.hospital_id as "hospitalId",t.name as "hospitalName",m.sent_by as "sentBy",m.body,m.created_at as "sentAt" from public.platform_messages m join public.tenants t on t.id=m.hospital_id order by m.created_at desc limit 500'); res.json({ messages: result.rows.map((row) => ({ ...row, direction: 'outgoing' })) }) }))
 app.post('/platform/tenants/:tenantId/messages', platformAuth, asyncRoute(async (req, res) => { const tenant = await getTenant(req.params.tenantId), body = String(req.body?.body || '').trim().slice(0,5000); if (!tenant) return apiError(res, 'Hospital tenant not found', 404); if (!body) return apiError(res, 'Message body is required', 400); const message = { id: id('message'), hospitalId: tenant.id, hospitalName: tenant.name, body, sentAt: now(), sentBy: req.auth.sub }; await query('insert into public.platform_messages (id,hospital_id,sent_by,body) values ($1,$2,$3,$4)', [message.id,tenant.id,req.auth.sub,body]); await platformAudit(req.auth.sub, 'hospital.message.sent', 'platform_message', message.id, { tenantId: tenant.id }); res.status(201).json({ message }) }))
 app.post('/support/tickets', auth, asyncRoute(async (req, res) => { const issue = String(req.body?.issue || '').trim().slice(0,5000), priority = ['low','medium','high'].includes(req.body?.priority) ? req.body.priority : 'medium'; if (!issue) return apiError(res, 'Describe the support issue', 400); const ticket = { id: id('ticket'), hospitalId: req.auth.tenantId, issue, priority, status: 'open', reply: '', createdAt: now(), updatedAt: now(), createdBy: req.auth.sub }; await query('insert into public.support_tickets (id,hospital_id,created_by,issue,priority,status,reply) values ($1,$2,$3,$4,$5,$6,$7)', [ticket.id,ticket.hospitalId,ticket.createdBy,ticket.issue,ticket.priority,ticket.status,ticket.reply]); await recordAudit(ticket.hospitalId, req.auth.sub, 'support.ticket.created', 'support_ticket', ticket.id); res.status(201).json({ ticket }) }))
 app.get('/tenant/modules', auth, asyncRoute(async (req, res) => res.json({ modules: await moduleRows(req.auth.tenantId) })))
 app.patch('/tenant/modules/:code', auth, requireRole('facility_admin','ceo_owner'), asyncRoute(async (req, res) => { const result = await query('select e.status,e.source from public.module_entitlements e where e.hospital_id=$1 and e.module_code=$2', [req.auth.tenantId,req.params.code]); if (!result.rowCount) return apiError(res, 'Module not found', 404); if (result.rows[0].status !== 'entitled' || result.rows[0].source !== 'manual-payment-or-pro-override') return apiError(res, 'This hospital is not entitled to this module', 403); const status = req.body?.enabled === false ? 'disabled' : 'enabled'; await query('insert into public.tenant_modules (hospital_id,module_code,status,activated_by,activated_at) values ($1,$2,$3,$4,case when $3=\'enabled\' then now() end) on conflict (hospital_id,module_code) do update set status=excluded.status,activated_by=excluded.activated_by,activated_at=excluded.activated_at', [req.auth.tenantId,req.params.code,status,req.auth.sub]); await recordAudit(req.auth.tenantId,req.auth.sub,`module.${status}`,'module',req.params.code); res.json({ moduleCode: req.params.code, activationStatus: status }) }))
 
-app.post('/devices/invite', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => { const deviceId = String(req.body?.id || '').trim(), name = String(req.body?.name || '').trim(), token = String(req.body?.token || '').trim(); if (!deviceId || !name || !/^[A-Za-z0-9_-]{20,100}$/.test(token)) return apiError(res, 'A device name and valid access token are required', 400); const device = { id: deviceId, hospitalId: req.auth.tenantId, name, token, status: 'invited', createdBy: req.auth.sub, createdAt: now(), updatedAt: now() }, storedDevice = { ...device }; delete storedDevice.token; try { await transaction(async (client) => { await saveDomainRecord(client,req.auth.tenantId,'devices',deviceId,storedDevice); await client.query('insert into public.device_invites (token_hash,hospital_id,device_id) values ($1,$2,$3)',[sha256(token),req.auth.tenantId,deviceId]); await appendSyncChange(client,req.auth.tenantId,'devices',deviceId,'create',storedDevice,req.auth.sub) }) } catch (error) { if (error.code === '23505') return apiError(res, 'This device access token already exists', 409); throw error } res.status(201).json({ device }) }))
+app.post('/devices/invite', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => {
+  const deviceId = String(req.body?.id || '').trim()
+  const name = String(req.body?.name || '').trim().slice(0, 100)
+  const staffId = String(req.body?.assignedStaffId || '').trim()
+  const token = String(req.body?.token || '').trim()
+  if (!deviceId || !name || !staffId || !/^[A-Za-z0-9_-]{20,100}$/.test(token)) return apiError(res, 'A device name, staff member, and valid access token are required', 400)
+  const staff = await getStaff(req.auth.tenantId, staffId)
+  if (!staff) return apiError(res, 'Staff member not found in this hospital', 404)
+  if (!staff.authUserId) return apiError(res, 'Create a sign-in account for this staff member before linking a device', 409)
+  const device = { id: deviceId, hospitalId: req.auth.tenantId, name, assignedStaffId: staffId, status: 'invited', createdBy: req.auth.sub, createdAt: now(), updatedAt: now() }
+  try {
+    await transaction(async (client) => {
+      await saveDomainRecord(client, req.auth.tenantId, 'devices', deviceId, device)
+      await client.query('insert into public.device_invites (token_hash,hospital_id,device_id) values ($1,$2,$3)', [sha256(token), req.auth.tenantId, deviceId])
+      await appendSyncChange(client, req.auth.tenantId, 'devices', deviceId, 'create', device, req.auth.sub)
+    })
+  } catch (error) {
+    if (error.code === '23505') return apiError(res, 'This device access token already exists', 409)
+    throw error
+  }
+  res.status(201).json({ device })
+}))
 async function findDeviceInvite(token) { if (!token) return null; const result = await query('select i.hospital_id,i.device_id from public.device_invites i where i.token_hash=$1 and (i.expires_at is null or i.expires_at>now())', [sha256(token)]); if (!result.rowCount) return null; const device = await getDomainRecord(result.rows[0].hospital_id,'devices',result.rows[0].device_id); return device ? { tenantId: result.rows[0].hospital_id, recordId: result.rows[0].device_id, payload: device } : null }
-app.get('/devices/join', asyncRoute(async (req, res) => { const invite = await findDeviceInvite(String(req.query.token || '')); if (!invite) return apiError(res, 'Device access link not found', 404); const tenant = await getTenant(invite.tenantId); if (!tenant || tenant.status !== 'active') return apiError(res, 'This hospital workspace is not active', 403); res.json({ device: invite.payload }) }))
-app.post('/devices/join', asyncRoute(async (req, res) => { const invite = await findDeviceInvite(String(req.body?.token || '')); if (!invite) return apiError(res, 'Device access link not found', 404); const tenant = await getTenant(invite.tenantId); if (!tenant || tenant.status !== 'active') return apiError(res, 'This hospital workspace is not active', 403); if (!['invited','pending'].includes(invite.payload.status)) return apiError(res, 'This device invitation is no longer available', 409); const device = { ...invite.payload, status: 'pending', requestedName: String(req.body?.name || '').trim().slice(0,100) || invite.payload.name, requestedAt: now(), updatedAt: now() }; await addRecord(invite.tenantId,'devices',invite.recordId,device,'update'); res.json({ device }) }))
-app.get('/devices', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => res.json({ devices: await listDomainRecords(req.auth.tenantId,'devices') })))
+app.get('/devices/join', asyncRoute(async (req, res) => {
+  const invite = await findDeviceInvite(String(req.query.token || ''))
+  if (!invite) return apiError(res, 'Device access link not found', 404)
+  const tenant = await getTenant(invite.tenantId)
+  if (!tenant || tenant.status !== 'active') return apiError(res, 'This hospital workspace is not active', 403)
+  const staff = invite.payload.assignedStaffId ? await getStaff(invite.tenantId, invite.payload.assignedStaffId) : null
+  const credential = String(req.get('x-dibia-device-key') || '')
+  const keyResult = credential ? await query('select 1 from public.device_credentials where hospital_id=$1 and device_id=$2 and credential_hash=$3', [invite.tenantId, invite.recordId, sha256(credential)]) : { rowCount: 0 }
+  res.json({ device: { ...invite.payload, assignedStaffName: staff?.name || '', assignedStaffEmail: staff?.email || '', registeredHere: keyResult.rowCount > 0 } })
+}))
+app.post('/devices/join', asyncRoute(async (req, res) => {
+  const invite = await findDeviceInvite(String(req.body?.token || ''))
+  if (!invite) return apiError(res, 'Device access link not found', 404)
+  const tenant = await getTenant(invite.tenantId)
+  if (!tenant || tenant.status !== 'active') return apiError(res, 'This hospital workspace is not active', 403)
+  if (!invite.payload.assignedStaffId) return apiError(res, 'This link is not assigned to a staff sign-in account. Ask your administrator for a staff device link.', 409)
+  const staff = await getStaff(invite.tenantId, invite.payload.assignedStaffId)
+  if (!staff?.authUserId || staff.active === false) return apiError(res, 'The assigned staff sign-in account is not active', 409)
+  const deviceKey = String(req.body?.deviceKey || '')
+  if (!/^[A-Za-z0-9_-]{40,160}$/.test(deviceKey)) return apiError(res, 'This browser could not create a secure device identity. Reload and try again.', 400)
+  const keyHash = sha256(deviceKey)
+  let device
+  await transaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [`device:${invite.tenantId}:${invite.recordId}`])
+    const current = await getDomainRecord(invite.tenantId, 'devices', invite.recordId, client)
+    const credential = await client.query('select credential_hash from public.device_credentials where hospital_id=$1 and device_id=$2 for update', [invite.tenantId, invite.recordId])
+    if (credential.rowCount && credential.rows[0].credential_hash !== keyHash) throw Object.assign(new Error('This invitation is already registered on another device. Contact your administrator.'), { status: 409 })
+    if (!credential.rowCount) await client.query('insert into public.device_credentials (hospital_id,device_id,credential_hash) values ($1,$2,$3)', [invite.tenantId, invite.recordId, keyHash])
+    if (['approved','revoked'].includes(current.status)) {
+      device = current
+      return
+    }
+    if (!['invited','pending'].includes(current.status)) throw Object.assign(new Error('This device invitation is no longer available'), { status: 409 })
+    device = { ...current, status: 'pending', requestedName: String(req.body?.name || '').trim().slice(0, 100) || current.name, requestedAt: current.requestedAt || now(), updatedAt: now() }
+    await saveDomainRecord(client, invite.tenantId, 'devices', invite.recordId, device)
+    await appendSyncChange(client, invite.tenantId, 'devices', invite.recordId, 'update', device)
+  })
+  res.json({ device: { ...device, assignedStaffName: staff.name, assignedStaffEmail: staff.email, registeredHere: true } })
+}))
+app.get('/devices', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => {
+  const devices = await listDomainRecords(req.auth.tenantId, 'devices')
+  const rows = await Promise.all(devices.map(async (device) => {
+    const staff = device.assignedStaffId ? await getStaff(req.auth.tenantId, device.assignedStaffId) : null
+    return { ...device, assignedStaffName: staff?.name || '', assignedStaffEmail: staff?.email || '' }
+  }))
+  res.json({ devices: rows })
+}))
 app.post('/devices/:deviceId/link', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => {
   const device = await getDomainRecord(req.auth.tenantId, 'devices', req.params.deviceId)
   if (!device) return apiError(res, 'Device not found', 404)
-  if (device.status !== 'invited') return apiError(res, 'Only invited devices can have an access link', 409)
+  if (device.status === 'rejected') return apiError(res, 'Rejected device invitations cannot be copied. Create a new link.', 409)
   const token = crypto.randomBytes(24).toString('base64url')
+  let updatedDevice = device
   await transaction(async (client) => {
     await client.query('delete from public.device_invites where hospital_id=$1 and device_id=$2', [req.auth.tenantId, device.id])
     await client.query('insert into public.device_invites (token_hash,hospital_id,device_id) values ($1,$2,$3)', [sha256(token), req.auth.tenantId, device.id])
+    if (device.status === 'revoked') {
+      await client.query('delete from public.device_credentials where hospital_id=$1 and device_id=$2', [req.auth.tenantId, device.id])
+      const next = { ...device, status: 'invited', requestedName: null, requestedAt: null, updatedAt: now() }
+      await saveDomainRecord(client, req.auth.tenantId, 'devices', device.id, next)
+      await appendSyncChange(client, req.auth.tenantId, 'devices', device.id, 'update', next, req.auth.sub)
+      updatedDevice = next
+    }
   })
-  res.json({ token })
+  res.json({ token, device: updatedDevice })
 }))
 app.delete('/devices/:deviceId', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => {
   const device = await getDomainRecord(req.auth.tenantId, 'devices', req.params.deviceId)
   if (!device) return apiError(res, 'Device not found', 404)
   await transaction(async (client) => {
     await client.query('delete from public.device_invites where hospital_id=$1 and device_id=$2', [req.auth.tenantId, device.id])
+    await client.query('delete from public.device_credentials where hospital_id=$1 and device_id=$2', [req.auth.tenantId, device.id])
     await saveDomainRecord(client, req.auth.tenantId, 'devices', device.id, device, true)
     await appendSyncChange(client, req.auth.tenantId, 'devices', device.id, 'delete', null, req.auth.sub)
   })
   res.json({ ok: true })
 }))
-app.patch('/devices/:deviceId', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => { const status = String(req.body?.status || ''); if (!['approved','rejected','revoked'].includes(status)) return apiError(res, 'Invalid device status', 400); const old = await getDomainRecord(req.auth.tenantId,'devices',req.params.deviceId); if (!old) return apiError(res, 'Device not found', 404); const allowed = status === 'approved' || status === 'rejected' ? old.status === 'pending' : old.status === 'approved'; if (!allowed) return apiError(res, `A device cannot move from ${old.status} to ${status}`, 409); const device = { ...old, status, decidedBy: req.auth.sub, decidedAt: now(), updatedAt: now() }; await addRecord(req.auth.tenantId,'devices',old.id,device,'update',req.auth.sub); await recordAudit(req.auth.tenantId,req.auth.sub,`device.${status}`,'device',old.id,{ before: { status: old.status }, after: { status } }); res.json({ device }) }))
+app.patch('/devices/:deviceId', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => {
+  const status = String(req.body?.status || '')
+  if (!['approved','rejected','revoked'].includes(status)) return apiError(res, 'Invalid device status', 400)
+  const old = await getDomainRecord(req.auth.tenantId, 'devices', req.params.deviceId)
+  if (!old) return apiError(res, 'Device not found', 404)
+  const allowed = status === 'approved' ? ['pending','revoked'].includes(old.status) : status === 'rejected' ? old.status === 'pending' : old.status === 'approved'
+  if (!allowed) return apiError(res, `A device cannot move from ${old.status} to ${status}`, 409)
+  if (status === 'approved') {
+    const credential = await query('select 1 from public.device_credentials where hospital_id=$1 and device_id=$2', [req.auth.tenantId, old.id])
+    if (!credential.rowCount) return apiError(res, 'The device must open its invitation and request access before approval', 409)
+  }
+  const device = { ...old, status, decidedBy: req.auth.sub, decidedAt: now(), updatedAt: now() }
+  await addRecord(req.auth.tenantId, 'devices', old.id, device, 'update', req.auth.sub)
+  await recordAudit(req.auth.tenantId, req.auth.sub, `device.${status}`, 'device', old.id, { before: { status: old.status }, after: { status } })
+  res.json({ device })
+}))
 
 app.get('/sync/snapshot', auth, asyncRoute(async (req, res) => { let pageState = null; if (req.query.cursor) { try { const cursor = jwt.verify(String(req.query.cursor),JWT_SECRET,{ algorithms:['HS256'],audience:'sync-snapshot' }); if (cursor.tenantId !== req.auth.tenantId || !Number.isSafeInteger(cursor.highWater) || (cursor.after !== null && typeof cursor.after !== 'string')) throw new Error(); pageState = { after: cursor.after, highWater: cursor.highWater } } catch { return apiError(res,'Invalid or expired snapshot cursor. Restart the snapshot.',400) } } const result = await readSupabaseSnapshot({ tenantId:req.auth.tenantId,pageState,pageSize:200 }); const nextCursor = result.nextState ? jwt.sign({ ...result.nextState,tenantId:req.auth.tenantId,aud:'sync-snapshot' },JWT_SECRET,{ expiresIn:'1h' }) : null; res.json({ records:result.records,nextCursor,deltaCursor:result.deltaCursor }) }))
 app.post('/sync', auth, asyncRoute(async (req, res) => { const ops = Array.isArray(req.body?.ops) ? req.body.ops.slice(0,50) : []; try { res.json(await applySupabaseSync({ tenantId:req.auth.tenantId,actorId:req.auth.sub,ops,allowedEntities,timestamp:now })) } catch (error) { console.error('Supabase sync failed',{ requestId:req.requestId,...errorDiagnostics(error) }); apiError(res,'Sync failed') } }))
