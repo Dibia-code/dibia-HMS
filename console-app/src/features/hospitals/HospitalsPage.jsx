@@ -10,6 +10,25 @@ import { hospitalStatusPill } from '@/lib/status'
 // and all registered hospitals (Suspend / Reactivate). Actions write through the
 // repository, so these tables and the overview stats update live.
 const DEMO_MODULES = ['Reception', 'Queue', 'Cashier', 'Pharmacy', 'Inventory', 'Reports'].map((name) => ({ code: name.toLowerCase(), name }))
+const MODULE_TITLES = {
+  reception: 'Reception',
+  queue: 'Queue',
+  cashier: 'Cashier',
+  pharmacy: 'Pharmacy',
+  inventory: 'Inventory',
+  reports: 'Reports',
+  'patient-management': 'Patients',
+  appointments: 'Appointments',
+  emr: 'Clinical',
+  laboratory: 'Laboratory',
+  billing: 'Billing',
+  inpatient: 'Inpatient',
+  radiology: 'Radiology',
+  hr: 'HR',
+  analytics: 'Analytics',
+  telemedicine: 'Telemedicine',
+}
+const moduleTitle = (module) => MODULE_TITLES[module.code] || module.name
 export default function HospitalsPage() {
   const repo = useRepo()
   const toast = useToast()
@@ -39,7 +58,7 @@ export default function HospitalsPage() {
     const current = Array.isArray(hospital.modules) ? hospital.modules : []
     const modules = current.includes(module.code) ? current.filter((item) => item !== module.code) : [...current, module.code]
     await repo.update('hospitals', hospital.id, { modules })
-    toast.success(`${module.name} ${modules.includes(module.code) ? 'enabled for' : 'disabled for'} ${hospital.name}`)
+    toast.success(`${moduleTitle(module)} ${modules.includes(module.code) ? 'enabled for' : 'disabled for'} ${hospital.name}`)
   }
   async function toggleAllModules(hospital) {
     const allGranted = moduleCatalog.length > 0 && moduleCatalog.every((module) => hospital.modules?.includes(module.code))
@@ -142,7 +161,7 @@ export default function HospitalsPage() {
                   <div className="hospital-detail hospital-detail-action"><span>Account action</span><Button variant="secondary" onClick={() => toggleSuspend(p)}>{p.status === 'suspended' ? 'Reactivate' : 'Suspend'}</Button></div>
                   <div className="hospital-modules-section">
                     <div className="hospital-modules-heading"><strong>Enabled modules</strong><Button variant="secondary" onClick={() => toggleAllModules(p)}>{allGranted ? 'Lock all' : 'Grant Pro access'}</Button></div>
-                    <div className="hospital-module-checks">{moduleCatalog.map((module) => <label key={module.code}><input type="checkbox" checked={(Array.isArray(p.modules) ? p.modules : []).includes(module.code)} onChange={() => toggleModule(p, module)} />{module.name}</label>)}</div>
+                    <div className="hospital-module-checks">{moduleCatalog.map((module) => <label key={module.code}><input type="checkbox" checked={(Array.isArray(p.modules) ? p.modules : []).includes(module.code)} onChange={() => toggleModule(p, module)} />{moduleTitle(module)}</label>)}</div>
                   </div>
                 </div>
               )}

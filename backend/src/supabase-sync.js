@@ -1,7 +1,8 @@
-import { appendSyncChange, getBranch, getProfile, getStaff, listDomainRecordsAfter, query, saveDomainRecord, transaction } from './supabase-store.js'
-import { canWriteEntity, sanitizeSyncPayload } from './policy.js'
+import { appendSyncChange, getBranch, getDomainRecord, getProfile, getStaff, listDomainRecordsAfter, query, saveDomainRecord, transaction } from './supabase-store.js'
+import { canWriteEntity, hasPermission, sanitizeSyncPayload } from './policy.js'
 
 const tenantEntities = ['hospitals', 'branches', 'staff', 'staff_roles', 'patients', 'visits', 'appointments', 'payments', 'sales', 'products', 'batches', 'stock_movements', 'prescriptions', 'dispensings', 'refunds', 'expenses', 'customers', 'suppliers', 'purchase_orders', 'transfers', 'stock_counts', 'hmo_claims', 'devices', 'shift_reports', 'audit_log', 'complaints', 'hr_actions', 'staff_payments', 'settings']
+const stableValue = (value) => Array.isArray(value) ? value.map(stableValue) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableValue(value[key])])) : value
 
 async function existingBootstrapCreate(entity, tenantId, recordId, payload) {
   if (entity === 'hospitals' && recordId === tenantId) {
@@ -72,6 +73,20 @@ export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntitie
     if (!adminOnly.has(entity) && !canWriteEntity({ entity, operation: action, roles, grants, denies })) {
       rejected.push({ opId, code: 'forbidden', message: 'Your role does not have permission to change this record', retryable: false })
       continue
+    }
+    const billingOnlyVisitEdit = entity === 'visits' && action === 'update' &&
+      hasPermission({ permission: 'billing.edit', roles, grants, denies }) &&
+      !hasPermission({ permission: 'patients.manage', roles, grants, denies }) &&
+      !hasPermission({ permission: 'queue.manage', roles, grants, denies })
+    if (billingOnlyVisitEdit) {
+      const current = await getDomainRecord(tenantId, 'visits', recordId)
+      const next = sanitizeSyncPayload(operation.payload)
+      const keys = new Set([...Object.keys(current || {}), ...Object.keys(next)])
+      const protectedChanges = [...keys].filter((key) => !['charges', 'updatedAt'].includes(key) && JSON.stringify(stableValue(current?.[key] ?? null)) !== JSON.stringify(stableValue(next[key] ?? null)))
+      if (!current || protectedChanges.length) {
+        rejected.push({ opId, code: 'forbidden', message: 'Cashier access only allows adding or removing bill items', retryable: false })
+        continue
+      }
     }
     if (!admin && entity === 'staff_roles' && elevatedRoles.has(operation.payload?.role)) {
       rejected.push({ opId, code: 'forbidden', message: 'Only hospital administrators can assign administrator roles', retryable: false })

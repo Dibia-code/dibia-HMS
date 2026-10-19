@@ -17,6 +17,9 @@ export const ROLE = {
   SALES_STAFF: 'sales_staff',
   ACCOUNTANT: 'accountant',
   WAREHOUSE_OFFICER: 'warehouse_officer',
+  DOCTOR: 'doctor',
+  NURSE: 'nurse',
+  LABORATORY_TECHNICIAN: 'laboratory_technician',
 }
 
 // Ordered list; label = exact UI text.
@@ -35,6 +38,9 @@ export const ROLES = [
   { slug: ROLE.SALES_STAFF, label: 'Sales Staff' },
   { slug: ROLE.ACCOUNTANT, label: 'Accountant' },
   { slug: ROLE.WAREHOUSE_OFFICER, label: 'Warehouse Officer' },
+  { slug: ROLE.DOCTOR, label: 'Doctor' },
+  { slug: ROLE.NURSE, label: 'Nurse' },
+  { slug: ROLE.LABORATORY_TECHNICIAN, label: 'Laboratory Technician' },
 ]
 
 const LABEL_BY_SLUG = Object.fromEntries(ROLES.map((r) => [r.slug, r.label]))

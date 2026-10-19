@@ -6,7 +6,7 @@ import { useLiveQuery } from '@/hooks/useLiveQuery'
 import { useHospital } from '@/hooks/useHospital'
 import { useToast, usePageHeader, Button, Card, CardHead, Field, Input, Select, Pill, DataTable, Icon, Switch } from '@/components'
 import { searchPatients, findPossibleDuplicates, ageFrom } from '@/lib/patients'
-import { STATUS_BY_KEY } from '@/lib/hospital'
+import { STATUS_BY_KEY, routingDepartments } from '@/lib/hospital'
 import { naira, relativeTime, formatDate } from '@/lib/format'
 import PatientRecord from './PatientRecord'
 import { uuid } from '@/lib/id'
@@ -71,7 +71,7 @@ function Steps({ step, onJump }) {
 }
 
 function RoutingFields({ config = {}, route = {}, setRoute, hmo = {}, setHmo, doctors = [] }) {
-  const departments = Array.isArray(config?.departments) ? config.departments : []
+  const departments = routingDepartments(config)
   const doctorList = Array.isArray(doctors) ? doctors : []
   return (
     <div className="stack-gap">
@@ -240,13 +240,14 @@ export default function ReceptionPage() {
       return
     }
     const dept = config.departments.find((d) => d.id === route.departmentId)
+    const destination = routingDepartments(config).find((d) => d.id === route.departmentId)
     const visit = {
       symptoms: existing ? [] : form.symptoms,
       route: {
-        departmentId: dept?.id || null,
-        department: dept?.name || '',
+        departmentId: destination?.id || null,
+        department: destination?.name || '',
         doctor: (route.doctor === '__other' ? route.otherDoctor : route.doctor || '').trim(),
-        emergency: dept ? dept.name.toLowerCase() === 'emergency' : false,
+        emergency: destination ? destination.name.toLowerCase() === 'emergency' : false,
       },
       hmo: hmo.on ? { scheme: hmo.scheme.trim(), memberId: hmo.memberId.trim() } : null,
       charges:

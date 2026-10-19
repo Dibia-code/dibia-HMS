@@ -8,6 +8,7 @@ import { useHospital } from '@/hooks/useHospital'
 import { useToast, usePageHeader, Button, Card, DataTable, Pill, Modal, ConfirmDialog, Field, Input, Select, Textarea } from '@/components'
 import { settlement, BILL_STATUS, METHOD_LABEL, vatLabel } from '@/lib/billing'
 import { naira, formatDateTime, formatDate } from '@/lib/format'
+import { uuid } from '@/lib/id'
 import { ReceiptView } from './Receipt'
 
 const FILTERS = [
@@ -39,7 +40,10 @@ export default function BillsPage() {
   const [refundForm, setRefundForm] = useState({ amount: '', method: 'cash', reason: '' })
   const [refundError, setRefundError] = useState('')
   const [refundConfirm, setRefundConfirm] = useState(false)
+  const [chargeToRemove, setChargeToRemove] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [chargeLabel, setChargeLabel] = useState('')
+  const [chargeAmount, setChargeAmount] = useState('')
 
   usePageHeader({ title: 'Bills and receipts', subtitle: 'Every patient bill, current and settled' }, [])
 
@@ -78,6 +82,39 @@ export default function BillsPage() {
     setRefundForm({ amount: String(max), method: firstMethod, reason: '' })
     setRefundError('')
     setRefunding({ payment: p, max })
+  }
+
+  async function addBillItem(visit) {
+    const label = chargeLabel.trim()
+    const amount = Number(String(chargeAmount).replace(/,/g, ''))
+    if (!label || !Number.isFinite(amount) || amount <= 0) {
+      toast.error('Enter a bill item and a valid amount')
+      return
+    }
+    try {
+      await repo.updateVisit(visit.id, { charges: [...(visit.charges || []), { id: uuid(), type: 'service', label, qty: 1, unitPrice: Math.round(amount * 100) / 100, at: new Date().toISOString() }] }, { actorId: user.userId, action: 'bill.charge.added', ref: `${visit.patientName} · ${label}` })
+      setChargeLabel('')
+      setChargeAmount('')
+      toast.success('Bill item added')
+    } catch (error) {
+      toast.error(error.message || 'Could not add the bill item')
+    }
+  }
+
+  async function removeBillItem(visit, charge) {
+    const charges = (visit.charges || []).filter((item) => item.id !== charge.id)
+    const revised = settlement({ ...visit, charges }, detail.pays, config)
+    if (revised.total + 0.001 < detail.st.paid + detail.st.hmo) {
+      toast.error('This item cannot be removed because recorded payments already cover more than the revised bill')
+      return
+    }
+    try {
+      await repo.updateVisit(visit.id, { charges }, { actorId: user.userId, action: 'bill.charge.removed', ref: `${visit.patientName} · ${charge.label}` })
+      setChargeToRemove(null)
+      toast.success('Bill item removed')
+    } catch (error) {
+      toast.error(error.message || 'Could not remove the bill item')
+    }
   }
 
   function reviewRefund() {
@@ -158,9 +195,16 @@ export default function BillsPage() {
               <div key={l.id} className="bill-line">
                 <span className="grow"><span className="r-title">{l.label}</span>{l.qty > 1 && <span className="r-sub">{l.qty} x {naira(l.unitPrice)}</span>}</span>
                 <span className="tabular">{naira(l.amount)}</span>
+                {can(PERM.BILLING_EDIT) && detail.visit.charges?.some((charge) => charge.id === l.id) && <Button size="sm" variant="danger" onClick={() => setChargeToRemove(detail.visit.charges.find((charge) => charge.id === l.id))}>Remove</Button>}
               </div>
             ))}
           </div>
+          {can(PERM.BILLING_EDIT) && <div className="stack-gap mt-2">
+            <div className="section-label">Edit bill items</div>
+            <Field label="Item description" htmlFor="bill-item-label"><Input id="bill-item-label" value={chargeLabel} onChange={(event) => setChargeLabel(event.target.value)} /></Field>
+            <Field label="Amount" htmlFor="bill-item-amount"><Input id="bill-item-amount" inputMode="decimal" value={chargeAmount} onChange={(event) => setChargeAmount(event.target.value)} /></Field>
+            <Button variant="secondary" onClick={() => addBillItem(detail.visit)}>Add item to bill</Button>
+          </div>}
           <div className="bill-totals">
             <div><span>Subtotal</span><span>{naira(detail.st.subtotal)}</span></div>
             {detail.st.vat > 0 && <div><span>{vatLabel(detail.st)}</span><span>{naira(detail.st.vat)}</span></div>}
@@ -242,6 +286,8 @@ export default function BillsPage() {
           onCancel={() => setRefundConfirm(false)}
         />
       )}
+
+      {chargeToRemove && detail && <ConfirmDialog title="Remove this bill item?" message={<p>Remove <b>{chargeToRemove.label}</b> from {detail.visit.patientName}'s bill? This change will be recorded in the audit trail.</p>} confirmLabel="Remove item" onConfirm={() => removeBillItem(detail.visit, chargeToRemove)} onCancel={() => setChargeToRemove(null)} />}
 
       {receipt && <ReceiptView payment={receipt} hospital={hospital} onClose={() => setReceipt(null)} />}
     </>

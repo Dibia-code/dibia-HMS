@@ -33,6 +33,16 @@ export function defaultHospitalConfig() {
   }
 }
 
+export function routingDepartments(config) {
+  const configured = Array.isArray(config?.departments) ? config.departments : []
+  const names = new Set(configured.map((department) => String(department.name || '').trim().toLowerCase()))
+  const extra = [
+    { id: 'builtin_lab_route', name: 'Laboratory', fee: 0 },
+    { id: 'builtin_pharmacy_route', name: 'Pharmacy', fee: 0 },
+  ].filter((department) => !names.has(department.name.toLowerCase()))
+  return [...configured, ...extra]
+}
+
 export function hospitalConfig(hospital) {
   const base = defaultHospitalConfig()
   return {

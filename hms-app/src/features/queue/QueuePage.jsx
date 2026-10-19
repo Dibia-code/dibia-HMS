@@ -7,7 +7,7 @@ import { useLiveQuery } from '@/hooks/useLiveQuery'
 import { useNow } from '@/hooks/useNow'
 import { useHospital } from '@/hooks/useHospital'
 import { useToast, usePageHeader, Button, Card, Pill, Select, Input, Modal, EmptyState, Field } from '@/components'
-import { QUEUE_STATUSES, CLOSE_REASONS } from '@/lib/hospital'
+import { QUEUE_STATUSES, CLOSE_REASONS, routingDepartments } from '@/lib/hospital'
 import { relativeTime } from '@/lib/format'
 
 export default function QueuePage() {
@@ -16,7 +16,7 @@ export default function QueuePage() {
   const toast = useToast()
   const now = useNow()
   const { config } = useHospital()
-  const departments = Array.isArray(config?.departments) ? config.departments : []
+  const departments = routingDepartments(config)
   const canManage = can(PERM.QUEUE_MANAGE)
 
   const { data: visits } = useLiveQuery(() => repo.list('visits'), [repo])
