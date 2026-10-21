@@ -120,11 +120,22 @@ export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntitie
 
         const payload = { ...sanitizeSyncPayload(operation.payload), id: recordId, hospitalId: tenantId, updatedAt: timestamp() }
         const staffId = entity === 'staff' ? recordId : entity === 'staff_roles' ? String(payload.staffId || '') : null
+        let deletedStaffAuthUserId = null
+        if (entity === 'staff' && action === 'delete') {
+          const existing = await client.query('select auth_user_id from public.staff where hospital_id=$1 and id=$2', [tenantId, recordId])
+          deletedStaffAuthUserId = existing.rows[0]?.auth_user_id || null
+        }
         if (staffId && entity === 'staff_roles' && !await getStaff(tenantId, staffId)) {
           return { rejected: { code: 'not_found', message: 'Staff account does not exist in this hospital', retryable: false } }
         }
         if (entity === 'staff' && action !== 'delete') await saveDomainRecord(client, tenantId, entity, recordId, payload, false)
         else await saveDomainRecord(client, tenantId, entity, recordId, payload, action === 'delete')
+
+        if (deletedStaffAuthUserId) {
+          await client.query(`update public.profiles set active=false,roles='{}',perm_grants='{}',perm_denies='{}',updated_at=now() where id=$1 and hospital_id=$2`, [deletedStaffAuthUserId, tenantId])
+          await client.query('delete from public.profile_roles where user_id=$1 and hospital_id=$2', [deletedStaffAuthUserId, tenantId])
+          await client.query("update public.devices set status='revoked',updated_at=now() where hospital_id=$1 and assigned_staff_id=$2 and not is_deleted", [tenantId, recordId])
+        }
 
         if (entity === 'staff_roles') {
           const staff = await client.query('select auth_user_id from public.staff where hospital_id = $1 and id = $2', [tenantId, staffId])

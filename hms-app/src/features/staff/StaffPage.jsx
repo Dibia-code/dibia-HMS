@@ -37,6 +37,7 @@ export default function StaffPage() {
   const [history, setHistory] = useState(null)
   const [newDeviceLink, setNewDeviceLink] = useState('')
   const [suspending, setSuspending] = useState(null)
+  const [deletingStaff, setDeletingStaff] = useState(null)
   const [draft, setDraft] = useState(null) // null = panel closed
   const [errors, setErrors] = useState({})
 
@@ -152,6 +153,18 @@ export default function StaffPage() {
     await repo.saveStaff({ id: row.id, roleSlugs: row.roles, active: row.active === false, actorId: user.userId, statusChange: row.active === false ? 'reactivated' : 'suspended' })
     toast.success(row.active === false ? `${row.name} can sign in again` : `${row.name} is suspended`)
     setSuspending(null)
+  }
+
+  async function deleteStaff() {
+    const row = deletingStaff
+    if (!row) return
+    try {
+      await repo.removeStaff(row.id, user.userId)
+      toast.success(`${row.name} removed from staff`)
+      setDeletingStaff(null)
+    } catch (error) {
+      toast.error(error.message || 'Could not remove this staff member')
+    }
   }
 
   async function resetPassword(row) {
@@ -308,7 +321,10 @@ export default function StaffPage() {
                     onClick={() => { setErrors({}); setDraft({ id: r.id, firstName: r.firstName || r.name?.split(' ')[0] || '', surname: r.surname || r.name?.split(' ').slice(1, 2).join('') || '', otherNames: r.otherNames || r.name?.split(' ').slice(2).join(' ') || '', profession: r.profession || '', email: r.email, phone: r.phone || '', branchId: r.branchId || '', active: r.active !== false, roleSlugs: r.roles, permGrants: r.permGrants || [], permDenies: r.permDenies || [], pin: '', accessCode: '', needsAccount: false }) }}
                   />
                   {r.id !== user.userId && (
-                    <Button variant={r.active === false ? 'ghost' : 'danger'} size="sm" onClick={() => setSuspending(r)}>{r.active === false ? 'Reactivate' : 'Suspend'}</Button>
+                    <>
+                      <Button variant={r.active === false ? 'ghost' : 'danger'} size="sm" onClick={() => setSuspending(r)}>{r.active === false ? 'Reactivate' : 'Suspend'}</Button>
+                      <Button variant="danger" size="sm" onClick={() => setDeletingStaff(r)}>Delete</Button>
+                    </>
                   )}
                 </span>
               ),
@@ -358,6 +374,16 @@ export default function StaffPage() {
           confirmLabel={suspending.active === false ? 'Reactivate' : 'Suspend'}
           onConfirm={toggleSuspend}
           onCancel={() => setSuspending(null)}
+        />
+      )}
+      {deletingStaff && (
+        <ConfirmDialog
+          destructive
+          title={`Delete ${deletingStaff.name}?`}
+          message="This removes them from the staff list and disables their hospital sign-in. Their past clinical and payment records are retained. This cannot be undone."
+          confirmLabel="Delete staff"
+          onConfirm={deleteStaff}
+          onCancel={() => setDeletingStaff(null)}
         />
       )}
     </>

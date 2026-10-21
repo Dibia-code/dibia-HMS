@@ -241,9 +241,9 @@ export class LocalRepository {
 
   // Remove a staff member and all of their join rows together (§4) so no
   // orphaned staff_roles survive; each deletion is queued for sync.
-  async removeStaff(id) {
+  async removeStaff(id, actorId = null) {
     const db = await getDB()
-    const tx = db.transaction(['staff', 'staff_roles', 'outbox'], 'readwrite')
+    const tx = db.transaction(['staff', 'staff_roles', 'audit_log', 'outbox'], 'readwrite')
     const staff = await tx.objectStore('staff').get(id)
     const rows = await tx.objectStore('staff_roles').index('by_staff').getAll(id)
     for (const row of rows) {
@@ -252,8 +252,15 @@ export class LocalRepository {
     }
     await tx.objectStore('staff').delete(id)
     await this._enqueue(tx, { entity: 'staff', op: 'delete', recordId: id, payload: { ...(staff || {}), id, hospitalId: staff?.hospitalId || this.hospitalId } })
+    const audit = {
+      id: uuid(), hospitalId: staff?.hospitalId || this.hospitalId, branchId: staff?.branchId ?? null,
+      action: 'staff.deleted', ref: staff?.name || id, at: new Date().toISOString(), actorId,
+      before: { active: staff?.active !== false, roles: rows.map((row) => row.role) },
+    }
+    await tx.objectStore('audit_log').put(audit)
+    await this._enqueue(tx, { entity: 'audit_log', op: 'create', recordId: audit.id, payload: audit })
     await tx.done
-    emitChange(['staff', 'staff_roles'])
+    emitChange(['staff', 'staff_roles', 'audit_log'])
     return { id }
   }
 
