@@ -12,10 +12,14 @@ export default function FeedbackLayerHms() {
   const email = String(user?.email || '').trim().toLowerCase()
   const allowed = allowedEmails.includes(email)
   const configuredHospital = String(import.meta.env.VITE_FEEDBACK_HOSPITAL_ID || '').trim()
-  const hospitalStaff = Boolean(configuredHospital && user?.hospitalId === configuredHospital)
+  const configuredHospitalKey = configuredHospital.toLowerCase()
+  const hospitalKeys = [user?.hospitalId, user?.hospitalSlug].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean)
+  const hospitalStaff = Boolean(configuredHospitalKey && hospitalKeys.includes(configuredHospitalKey))
+  const demoStaff = import.meta.env.DEV && user?.hospitalId === 'hosp_demo' && (user?.roles || []).some((role) => ['cashier', 'receptionist'].includes(role))
   const publicReview = import.meta.env.VITE_FEEDBACK_PUBLIC_REVIEW === 'true'
-  const enabled = import.meta.env.VITE_FEEDBACK_ENABLED !== 'false' && (allowed || hospitalStaff || (!user && publicReview))
-  const scopeKey = import.meta.env.VITE_FEEDBACK_DEMO_REVIEW_MODE === 'true' && (allowed || hospitalStaff) ? 'shared-reviewer' : user?.userId || user?.id || (publicReview ? 'public-reviewer' : 'anonymous')
+  const reviewAccess = allowed || hospitalStaff || demoStaff
+  const enabled = import.meta.env.VITE_FEEDBACK_ENABLED !== 'false' && (reviewAccess || (!user && publicReview))
+  const scopeKey = import.meta.env.VITE_FEEDBACK_DEMO_REVIEW_MODE === 'true' && reviewAccess ? 'shared-reviewer' : user?.userId || user?.id || (publicReview ? 'public-reviewer' : 'anonymous')
   const api = useMemo(() => user?.hospitalId && sync?.remote?.hasEndpoint ? {
     list: async () => {
       const response = await sync.remote.request(`${sync.remote.baseUrl}/feedback`, { credentials: 'include', headers: {} })
