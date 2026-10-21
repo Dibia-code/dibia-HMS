@@ -1,7 +1,8 @@
 import { Outlet } from 'react-router-dom'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { useSyncEngine } from '../data/RepositoryContext'
+import { apiBase } from '../lib/apiBase'
 import FeedbackNotebook from './FeedbackNotebook'
 
 const allowedEmails = String(import.meta.env.VITE_FEEDBACK_REVIEWER_EMAILS || 'olawoyinabdulsalam202@gmail.com,iezediba@gmail.com').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean)
@@ -16,8 +17,22 @@ export default function FeedbackLayerHms() {
   const hospitalKeys = [user?.hospitalId, user?.hospitalSlug].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean)
   const hospitalStaff = Boolean(configuredHospitalKey && hospitalKeys.includes(configuredHospitalKey))
   const demoStaff = import.meta.env.DEV && user?.hospitalId === 'hosp_demo' && (user?.roles || []).some((role) => ['cashier', 'receptionist'].includes(role))
+  const directReviewAccess = allowed || hospitalStaff || demoStaff
+  const [ownerHospitalAccess, setOwnerHospitalAccess] = useState(false)
+  useEffect(() => {
+    let active = true
+    setOwnerHospitalAccess(false)
+    if (!user?.hospitalId || directReviewAccess || !sync?.remote?.hasEndpoint) return () => { active = false }
+    sync.remote.request(`${apiBase()}/feedback/access`, { credentials: 'include', headers: {} })
+      .then(async (response) => {
+        const result = await response.json().catch(() => ({}))
+        if (active && response.ok) setOwnerHospitalAccess(result.enabled === true)
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [user?.hospitalId, directReviewAccess, sync])
   const publicReview = import.meta.env.VITE_FEEDBACK_PUBLIC_REVIEW === 'true'
-  const reviewAccess = allowed || hospitalStaff || demoStaff
+  const reviewAccess = directReviewAccess || ownerHospitalAccess
   const enabled = import.meta.env.VITE_FEEDBACK_ENABLED !== 'false' && (reviewAccess || (!user && publicReview))
   const scopeKey = import.meta.env.VITE_FEEDBACK_DEMO_REVIEW_MODE === 'true' && reviewAccess ? 'shared-reviewer' : user?.userId || user?.id || (publicReview ? 'public-reviewer' : 'anonymous')
   const api = useMemo(() => user?.hospitalId && sync?.remote?.hasEndpoint ? {

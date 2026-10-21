@@ -19,6 +19,7 @@ const allowedEntities = new Set(['hospitals','branches','staff','staff_roles','p
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex')
 const now = () => new Date().toISOString()
+const feedbackReviewerEmails = new Set(String(process.env.FEEDBACK_REVIEWER_EMAILS || 'olawoyinabdulsalam202@gmail.com,iezediba@gmail.com').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean))
 const apiError = (res, message, status = 500) => res.status(status).json({ message, ...(status >= 500 && res.req?.requestId ? { requestId: res.req.requestId } : {}) })
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next)
 
@@ -560,6 +561,14 @@ app.patch('/platform/feedback/:id', platformAuth, asyncRoute(async (req, res) =>
   await platformAudit(req.auth.sub, 'feedback.updated', 'feedback_report', report.id, { status, build })
   const updates = await query('select id,kind,status,body as text,build,created_at as "createdAt" from public.feedback_updates where feedback_id=$1 order by created_at', [report.id])
   res.json({ feedback: { ...feedback, updates:updates.rows } })
+}))
+app.get('/feedback/access', auth, asyncRoute(async (req, res) => {
+  const result = await query(`select exists (
+    select 1 from public.profiles
+    where hospital_id=$1 and active and lower(email)=any($2::text[])
+      and roles && array['facility_admin','ceo_owner','super_admin']::text[]
+  ) as enabled`, [req.auth.tenantId, [...feedbackReviewerEmails]])
+  res.json({ enabled: result.rows[0]?.enabled === true })
 }))
 app.post('/feedback', auth, asyncRoute(async (req, res) => {
   const body = String(req.body?.text || '').trim().slice(0,5000)
