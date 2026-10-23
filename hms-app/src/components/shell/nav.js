@@ -83,9 +83,11 @@ const ITEM_MODULE = {
   hmo: 'billing', expenses: 'billing', reports: 'reports',
 }
 
-export function visibleNav(can, moduleCodes, backendEnabled = false) {
+export function visibleNav(can, moduleCodes, backendEnabled = false, pharmacyCollectPayments = true, roles = []) {
+  const pharmacyStaff = roles.some((role) => ['pharmacist', 'superintendent_pharmacist', 'pharmacy_cashier', 'dispenser', 'sales_staff'].includes(role))
   return NAV.map((s) => ({ ...s, items: s.items.filter((it) => {
     if (!can(it.perm)) return false
+    if (!pharmacyCollectPayments && !can(PERM.SETTINGS_MANAGE) && pharmacyStaff && ['pos', 'refund', 'cashier'].includes(it.to)) return false
     const required = ITEM_MODULE[it.to]
     return !backendEnabled || !required || moduleCodes?.includes(required)
   }) })).filter((s) => s.items.length > 0)

@@ -19,6 +19,7 @@ export function defaultHospitalConfig() {
     admission: { fee: 5000, bedPerDay: 8000 },
     expiryWindows: [30, 60, 90, 180, 365],
     notifyLowStock: false,
+    pharmacyCollectPayments: true,
     paymentMethods: { cash: true, pos: true, transfer: true, hmo: true },
     receipt: { footer: 'Thank you', showAddress: true, showPhone: true },
     offline: { syncIntervalSec: 15 },
@@ -43,18 +44,20 @@ export function routingDepartments(config) {
   return [...configured, ...extra]
 }
 
-export function hospitalConfig(hospital) {
+export function hospitalConfig(hospital, remoteSettings = null) {
   const base = defaultHospitalConfig()
+  const source = { ...(hospital || {}), ...(remoteSettings || {}) }
   return {
-    departments: hospital?.departments?.length ? hospital.departments : base.departments,
-    admission: { ...base.admission, ...(hospital?.admission || {}) },
-    expiryWindows: hospital?.expiryWindows?.length ? hospital.expiryWindows : base.expiryWindows,
-    notifyLowStock: hospital?.notifyLowStock ?? base.notifyLowStock,
-    paymentMethods: { ...base.paymentMethods, ...(hospital?.paymentMethods || {}) },
-    receipt: { ...base.receipt, ...(hospital?.receipt || {}) },
-    offline: { ...base.offline, ...(hospital?.offline || {}) },
-    levy: { ...base.levy, ...(hospital?.levy || {}) },
-    vat: { ...base.vat, ...(hospital?.vat || {}) },
+    departments: source.departments?.length ? source.departments : base.departments,
+    admission: { ...base.admission, ...(source.admission || {}) },
+    expiryWindows: source.expiryWindows?.length ? source.expiryWindows : base.expiryWindows,
+    notifyLowStock: source.notifyLowStock ?? base.notifyLowStock,
+    pharmacyCollectPayments: source.pharmacyCollectPayments ?? base.pharmacyCollectPayments,
+    paymentMethods: { ...base.paymentMethods, ...(source.paymentMethods || {}) },
+    receipt: { ...base.receipt, ...(source.receipt || {}) },
+    offline: { ...base.offline, ...(source.offline || {}) },
+    levy: { ...base.levy, ...(source.levy || {}) },
+    vat: { ...base.vat, ...(source.vat || {}) },
   }
 }
 

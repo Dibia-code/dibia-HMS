@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useAuth } from '@/auth/AuthContext'
+import { PERM } from '@/auth/permissions'
 import { useRepo } from '@/data/RepositoryContext'
+import { useHospital } from '@/hooks/useHospital'
 import { useLiveQuery } from '@/hooks/useLiveQuery'
 import {
   useToast, usePageHeader, Card, Button, SectionLabel, SearchScanBar, PayToggle, Select, EmptyState,
@@ -17,8 +19,9 @@ const stockLabel = (p) => (p.quantity <= 0 ? 'Out of stock' : `${p.quantity} in 
 // IndexedDB transaction, so a sale rung up with no network is durable locally
 // and syncs (idempotently) on reconnect. The SyncChip in the topbar reflects it.
 export default function PosPage() {
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const repo = useRepo()
+  const { config } = useHospital()
   const toast = useToast()
 
   const [query, setQuery] = useState('')
@@ -53,6 +56,8 @@ export default function PosPage() {
   const subtotal = cart.reduce((s, l) => s + l.price * l.qty, 0)
   const requiresCustomer = payment === 'credit'
   const hasRx = cart.some((l) => l.rx)
+  const pharmacyStaff = (user?.roles || []).some((role) => ['pharmacist', 'superintendent_pharmacist', 'pharmacy_cashier', 'dispenser', 'sales_staff'].includes(role))
+  const collectionBlocked = !config.pharmacyCollectPayments && pharmacyStaff && !can(PERM.SETTINGS_MANAGE)
 
   function addToCart(p) {
     if (p.quantity <= 0) return
@@ -124,6 +129,8 @@ export default function PosPage() {
       setBusy(false)
     }
   }
+
+  if (collectionBlocked) return <Card><SectionLabel>Pharmacy payments are disabled</SectionLabel><p className="text-muted">You can continue managing stock and dispensing prescriptions. Ask the hospital admin to enable pharmacy payment collection in Settings.</p></Card>
 
   return (
     <div className="pos-grid">

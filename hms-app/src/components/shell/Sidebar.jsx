@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
+import { useHospital } from '@/hooks/useHospital'
 import { roleLabel } from '@/auth/roles'
 import { Icon } from '../Icon'
 import { MODULES, visibleNav } from './nav'
@@ -7,9 +8,10 @@ import { cx } from '@/lib/cx'
 
 export function Sidebar({ onNavigate, open = false, onClose }) {
   const { user, can, logout } = useAuth()
+  const { config } = useHospital()
   const backendEnabled = import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
   const slug = user?.hospitalSlug
-  const sections = visibleNav(can, user?.moduleCodes, backendEnabled)
+  const sections = visibleNav(can, user?.moduleCodes, backendEnabled, config.pharmacyCollectPayments, user?.roles || [])
   const roles = (user?.roles || []).map(roleLabel).join(', ')
 
   return (

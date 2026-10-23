@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useAuth } from '@/auth/AuthContext'
+import { PERM } from '@/auth/permissions'
 import { useRepo } from '@/data/RepositoryContext'
+import { useHospital } from '@/hooks/useHospital'
 import { useLiveQuery } from '@/hooks/useLiveQuery'
 import { useToast, usePageHeader, Card, SectionLabel, Button, Field, Input, Textarea } from '@/components'
 import { naira } from '@/lib/format'
@@ -11,8 +13,9 @@ const normalizeRef = (s) => s.trim().replace(/^#/, '').toLowerCase()
 // records a reason, and confirms. Writes a refund + flips the sale to refunded,
 // offline-first like every other write (§5).
 export default function RefundPage() {
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const repo = useRepo()
+  const { config } = useHospital()
   const toast = useToast()
 
   const [txn, setTxn] = useState('')
@@ -63,6 +66,10 @@ export default function RefundPage() {
   usePageHeader({ title: 'Refund', subtitle: 'Process a return' }, [])
 
   const alreadyRefunded = found?.status === 'refunded'
+  const pharmacyStaff = (user?.roles || []).some((role) => ['pharmacist', 'superintendent_pharmacist', 'pharmacy_cashier', 'dispenser', 'sales_staff'].includes(role))
+  const collectionBlocked = !config.pharmacyCollectPayments && pharmacyStaff && !can(PERM.SETTINGS_MANAGE)
+
+  if (collectionBlocked) return <Card><SectionLabel>Pharmacy payments are disabled</SectionLabel><p className="text-muted">Ask the hospital admin to enable pharmacy payment collection in Settings.</p></Card>
 
   return (
     <>

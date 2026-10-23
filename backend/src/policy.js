@@ -19,8 +19,8 @@ const ROLE_PERMISSIONS = {
   accountant: new Set(['audit.view', 'hmo.manage', 'dashboard.view', 'billing.view', 'expenses.manage', 'reports.view', 'customers.view', 'customers.manage', 'subscription.manage', 'settings.devices']),
   sales_staff: new Set(['dashboard.view', 'pos.sell', 'inventory.view', 'customers.view', 'settings.devices']),
   receptionist: new Set(['dashboard.view', 'patients.manage', 'queue.view', 'queue.manage', 'settings.devices']),
-  pharmacy_cashier: new Set(['dashboard.view', 'billing.collect', 'billing.view', 'queue.view', 'pos.sell', 'pos.refund', 'inventory.view', 'report.submit', 'settings.devices']),
-  dispenser: new Set(['pharmacy.dispense', 'dashboard.view', 'queue.view', 'pos.sell', 'inventory.view', 'settings.devices']),
+  pharmacy_cashier: new Set(['dashboard.view', 'pos.sell', 'pos.refund', 'inventory.view', 'report.submit', 'settings.devices']),
+  dispenser: new Set(['pharmacy.dispense', 'dashboard.view', 'queue.view', 'inventory.view', 'settings.devices']),
   cashier: new Set(['dashboard.view', 'billing.collect', 'billing.view', 'billing.edit', 'billing.refund', 'report.submit', 'settings.devices']),
   doctor: new Set(['dashboard.view', 'patients.manage', 'queue.view', 'queue.manage']),
   nurse: new Set(['dashboard.view', 'patients.manage', 'queue.view', 'queue.manage']),
@@ -72,8 +72,10 @@ export function sanitizeSyncPayload(value, depth = 0) {
   return clean
 }
 
-export function canWriteEntity({ entity, operation, roles = [], grants = [], denies = [] }) {
+export function canWriteEntity({ entity, operation, roles = [], grants = [], denies = [], pharmacyCollectPayments = true }) {
   const admin = roles.some((role) => ['facility_admin', 'ceo_owner', 'super_admin'].includes(role))
+  const pharmacyStaff = roles.some((role) => ['pharmacist', 'superintendent_pharmacist', 'pharmacy_cashier', 'dispenser', 'sales_staff'].includes(role))
+  if (!pharmacyCollectPayments && !admin && pharmacyStaff && ['payments', 'sales', 'refunds'].includes(entity)) return false
   if (operation === 'delete' && !admin && !['staff', 'staff_roles'].includes(entity)) return false
   if (entity === 'audit_log') return operation === 'create'
   const required = REQUIRED_BY_ENTITY[entity]

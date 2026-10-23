@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/auth/AuthContext'
 import { PERM } from '@/auth/permissions'
-import { useRepo } from '@/data/RepositoryContext'
+import { useRepo, useSyncEngine } from '@/data/RepositoryContext'
 import { useHospital } from '@/hooks/useHospital'
 import { useToast, Card, CardHead, Button, Field, Input, Switch } from '@/components'
 
@@ -10,6 +10,7 @@ const METHODS = [['cash', 'Cash'], ['pos', 'POS / card'], ['transfer', 'Bank tra
 export default function HospitalSettings() {
   const { user, can } = useAuth()
   const repo = useRepo()
+  const sync = useSyncEngine()
   const toast = useToast()
   const { hospital, config } = useHospital()
   const canManage = can(PERM.SETTINGS_MANAGE)
@@ -23,12 +24,17 @@ export default function HospitalSettings() {
       showAddress: config.receipt.showAddress,
       showPhone: config.receipt.showPhone,
       paymentMethods: config.paymentMethods,
+      pharmacyCollectPayments: config.pharmacyCollectPayments,
       windows: config.expiryWindows.join(', '),
       notifyLowStock: config.notifyLowStock,
       syncIntervalSec: String(config.offline.syncIntervalSec),
       requireDeviceApproval: !!hospital.requireDeviceApproval,
     })
   }, [hospital, config, f])
+
+  useEffect(() => {
+    setF((current) => current ? { ...current, pharmacyCollectPayments: config.pharmacyCollectPayments } : current)
+  }, [config.pharmacyCollectPayments])
 
   if (!f) return null
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }))
@@ -39,14 +45,27 @@ export default function HospitalSettings() {
     if (!Object.values(f.paymentMethods).some(Boolean)) return toast.error('Keep at least one payment method on')
     setBusy(true)
     try {
+      let savedSettings = { pharmacyCollectPayments: f.pharmacyCollectPayments }
+      if (sync.remote?.configured) {
+        const response = await sync.remote.request(`${sync.remote.baseUrl}/settings/hospital`, {
+          method: 'PATCH', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(savedSettings),
+        })
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(result.message || 'Could not save pharmacy payment settings')
+        savedSettings = result.settings || savedSettings
+      }
       await repo.update('hospitals', user.hospitalId, {
         receipt: { footer: f.footer, showAddress: f.showAddress, showPhone: f.showPhone },
         paymentMethods: f.paymentMethods,
+        pharmacyCollectPayments: f.pharmacyCollectPayments,
         expiryWindows: windows.sort((a, b) => a - b),
         notifyLowStock: f.notifyLowStock,
         offline: { syncIntervalSec: Math.max(5, Number(f.syncIntervalSec) || 15) },
         requireDeviceApproval: f.requireDeviceApproval,
       })
+      window.dispatchEvent(new CustomEvent('dibia:hospital-settings-updated', { detail: savedSettings }))
       localStorage.setItem('dibia.syncIntervalSec', String(Math.max(5, Number(f.syncIntervalSec) || 15)))
       toast.success('Hospital settings saved')
     } catch (err) {
@@ -72,6 +91,13 @@ export default function HospitalSettings() {
         {METHODS.map(([k, label]) => (
           <div key={k} className="toggle-row"><div className="tname">{label}</div><Switch checked={f.paymentMethods[k]} disabled={!canManage} onChange={(v) => set('paymentMethods', { ...f.paymentMethods, [k]: v })} /></div>
         ))}
+      </Card>
+      <Card>
+        <CardHead title="Pharmacy payment collection" />
+        <div className="toggle-row">
+          <div><div className="tname">Allow pharmacy staff to collect payment for drug sales</div><div className="tsub">Turn this off to keep pharmacy work to inventory and dispensing. The hospital Cashier can still collect patient bills.</div></div>
+          <Switch checked={f.pharmacyCollectPayments} disabled={!canManage} onChange={(value) => set('pharmacyCollectPayments', value)} />
+        </div>
       </Card>
       <Card>
         <CardHead title="Pharmacy alerts" />

@@ -37,6 +37,10 @@ export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntitie
   const grants = Array.isArray(actor.permGrants) ? actor.permGrants : []
   const denies = Array.isArray(actor.permDenies) ? actor.permDenies : []
   const admin = roles.some((role) => ['facility_admin', 'ceo_owner', 'super_admin'].includes(role))
+  const pharmacyStaff = roles.some((role) => ['pharmacist', 'superintendent_pharmacist', 'pharmacy_cashier', 'dispenser', 'sales_staff'].includes(role))
+  const settingsResult = await query('select value from public.hospital_settings where hospital_id=$1', [tenantId])
+  const pharmacyCollectPayments = settingsResult.rows[0]?.value?.pharmacyCollectPayments !== false
+  const saleProductIds = new Set(ops.filter((operation) => operation?.entity === 'sales').flatMap((operation) => (operation.payload?.items || []).map((item) => String(item.productId || ''))))
   const adminOnly = new Set(['hospitals'])
   const elevatedRoles = new Set(['facility_admin', 'ceo_owner', 'super_admin'])
   const adminOnlyPermissions = new Set(['dashboard.admin', 'staff.manage', 'settings.manage', 'subscription.manage', 'ceo.view'])
@@ -60,6 +64,17 @@ export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntitie
       rejected.push({ opId, code: 'forbidden', message: 'Record belongs to a different hospital', retryable: false })
       continue
     }
+    const blockedPharmacyCollection = !pharmacyCollectPayments && !admin && pharmacyStaff && (
+      ['payments', 'sales', 'refunds'].includes(entity) ||
+      (entity === 'stock_movements' && operation.payload.type === 'sale') ||
+      (entity === 'batches' && action === 'update' && saleProductIds.has(String(operation.payload.productId || ''))) ||
+      (entity === 'products' && action === 'update' && saleProductIds.has(recordId)) ||
+      (entity === 'audit_log' && operation.payload.action === 'sale.recorded')
+    )
+    if (blockedPharmacyCollection) {
+      rejected.push({ opId, code: 'forbidden', message: 'Pharmacy payment collection is disabled by the hospital admin', retryable: false })
+      continue
+    }
     if (action === 'create' && ['hospitals', 'branches', 'staff', 'staff_roles'].includes(entity) && await existingBootstrapCreate(entity, tenantId, recordId, operation.payload)) {
       const result = await acknowledgeExistingCreate(opId, tenantId, actorId)
       if (result.acked) acked.push(opId)
@@ -70,7 +85,7 @@ export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntitie
       rejected.push({ opId, code: 'forbidden', message: 'Hospital admin permission is required for this record', retryable: false })
       continue
     }
-    if (!adminOnly.has(entity) && !canWriteEntity({ entity, operation: action, roles, grants, denies })) {
+    if (!adminOnly.has(entity) && !canWriteEntity({ entity, operation: action, roles, grants, denies, pharmacyCollectPayments })) {
       rejected.push({ opId, code: 'forbidden', message: 'Your role does not have permission to change this record', retryable: false })
       continue
     }

@@ -192,6 +192,19 @@ async function seedPlatform() {
 }
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'dibia-hms-backend', time: now(), dataStore: 'supabase-postgres', supabase: supabaseStatus() }))
+app.get('/settings/hospital', auth, asyncRoute(async (req, res) => {
+  const result = await query('select value from public.hospital_settings where hospital_id=$1', [req.auth.tenantId])
+  res.json({ settings: { pharmacyCollectPayments: result.rows[0]?.value?.pharmacyCollectPayments !== false } })
+}))
+app.patch('/settings/hospital', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => {
+  if (typeof req.body?.pharmacyCollectPayments !== 'boolean') return apiError(res, 'A pharmacy payment setting is required', 400)
+  const result = await query(`insert into public.hospital_settings (hospital_id,id,value,updated_at)
+    values ($1,'settings',jsonb_build_object('pharmacyCollectPayments',$2::boolean),now())
+    on conflict (hospital_id) do update set value=coalesce(public.hospital_settings.value,'{}'::jsonb) || excluded.value,updated_at=now()
+    returning value`, [req.auth.tenantId, req.body.pharmacyCollectPayments])
+  await recordAudit(req.auth.tenantId,req.auth.sub,'settings.pharmacy_collection.updated','hospital_settings',req.auth.tenantId,{ pharmacyCollectPayments: req.body.pharmacyCollectPayments })
+  res.json({ settings: { pharmacyCollectPayments: result.rows[0]?.value?.pharmacyCollectPayments !== false } })
+}))
 app.get('/health/ready', asyncRoute(async (_req, res) => {
   const checks = await Promise.allSettled([checkSupabaseDatabase(), supabaseAuthReady(), (async () => { const result = await query("select exists(select 1 from public.profiles where active and roles @> array['platform_super_admin']::text[]) as ready"); return result.rows[0].ready })()])
   const state = { supabaseDatabase: checks[0].status === 'fulfilled', supabaseAuthConfigured: checks[1].status === 'fulfilled', platformAdmin: checks[2].status === 'fulfilled' && checks[2].value }

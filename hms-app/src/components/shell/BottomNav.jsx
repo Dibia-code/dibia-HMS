@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
+import { useHospital } from '@/hooks/useHospital'
 import { Icon } from '../Icon'
 import { Button } from '../ui/Button'
 import { visibleNav } from './nav'
@@ -8,11 +9,12 @@ import { cx } from '@/lib/cx'
 
 export function BottomNav() {
   const { user, can, logout } = useAuth()
+  const { config } = useHospital()
   const backendEnabled = import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
   const [open, setOpen] = useState(false)
   const slug = user?.hospitalSlug
 
-  const all = visibleNav(can, user?.moduleCodes, backendEnabled).flatMap((s) => s.items)
+  const all = visibleNav(can, user?.moduleCodes, backendEnabled, config.pharmacyCollectPayments, user?.roles || []).flatMap((s) => s.items)
   const pinned = all.filter((it) => it.bottom)
   const needsMore = all.length > 5
   const shown = needsMore ? pinned.slice(0, 4) : all

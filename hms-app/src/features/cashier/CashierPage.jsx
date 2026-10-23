@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
+import { PERM } from '@/auth/permissions'
 import { useRepo } from '@/data/RepositoryContext'
 import { useLiveQuery } from '@/hooks/useLiveQuery'
 import { useHospital } from '@/hooks/useHospital'
@@ -25,10 +26,12 @@ const money = (v) => {
 }
 
 export default function CashierPage() {
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const repo = useRepo()
   const toast = useToast()
   const { hospital, config } = useHospital()
+  const pharmacyStaff = (user?.roles || []).some((role) => ['pharmacist', 'superintendent_pharmacist', 'pharmacy_cashier', 'dispenser', 'sales_staff'].includes(role))
+  const collectionBlocked = !config.pharmacyCollectPayments && pharmacyStaff && !can(PERM.SETTINGS_MANAGE)
   const [params, setParams] = useSearchParams()
 
   const { data: visits } = useLiveQuery(() => repo.list('visits'), [repo])
@@ -116,6 +119,8 @@ export default function CashierPage() {
   }
 
   const isFull = advance || collect >= due - 0.005
+
+  if (collectionBlocked) return <div className="card"><div className="section-label">Pharmacy payment collection is disabled</div><p className="text-muted">The hospital admin has assigned patient bill payments to Cashier staff.</p></div>
 
   function methodsToRecord() {
     if (method === 'split') {
