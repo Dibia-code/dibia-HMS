@@ -273,7 +273,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
   useEffect(() => {
     if (!panelOpen || !api?.messages) return undefined
     let active = true
-    api.messages().then((items) => { if (active) setMessages(items || []) }).catch(() => { if (active) setSyncError('Console messages could not be loaded.') })
+    api.messages().then((items) => { if (active) setMessages(items || []) }).catch(() => { if (active) setSyncError('Hospital messages could not be loaded. Check the backend connection and try again.') })
     return () => { active = false }
   }, [panelOpen, api])
 
@@ -337,6 +337,11 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
   async function refreshRemote() {
     if (!api?.list) return
     try { setRemoteNotes(await api.list()); setSyncError('') } catch { setSyncError('Shared feedback could not be refreshed. Your local notes remain available.') }
+  }
+
+  async function refreshMessages() {
+    if (!api?.messages) return
+    try { setMessages(await api.messages()); setSyncError('') } catch { setSyncError('Hospital messages could not be loaded. Check the backend connection and try again.') }
   }
 
   async function sendHospitalMessage() {
@@ -497,11 +502,15 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
       const nextContext = { ...(draft?.context || current), element: selected, section: selected.section, dialog: dialog ? selected.section || 'Dialog' : '' }
       persistDraft({ ...(draft || { id: uid(), text: '', category: 'Bug', priority: 'Normal', startedAt: new Date().toISOString() }), context: nextContext })
       setSelectionMode(false)
+      setPanelOpen(true)
       target.classList.add('feedback-target-highlight')
       window.setTimeout(() => target.classList.remove('feedback-target-highlight'), 1400)
     }
     const keyDown = (event) => {
-      if (event.key === 'Escape') setSelectionMode(false)
+      if (event.key === 'Escape') {
+        setSelectionMode(false)
+        setPanelOpen(true)
+      }
       if ((event.key === 'Enter' || event.key === ' ') && event.target instanceof Element && !rootRef.current?.contains(event.target)) {
         const target = event.target.closest('[data-feedback-id],button,input,textarea,select,table,[role="button"],[role="tab"],[role="dialog"],.card,.stat-card,section,article,main') || event.target
         if (target === document.body || target === document.documentElement) return
@@ -514,6 +523,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
         const dialog = target.closest('[role="dialog"]')
         persistDraft({ ...(draft || { id: uid(), text: '', category: 'Bug', priority: 'Normal', startedAt: new Date().toISOString() }), context: { ...(draft?.context || current), element: selected, section: selected.section, dialog: dialog ? selected.section || 'Dialog' : '' } })
         setSelectionMode(false)
+        setPanelOpen(true)
         target.classList.add('feedback-target-highlight')
         window.setTimeout(() => target.classList.remove('feedback-target-highlight'), 1400)
       }
@@ -532,7 +542,8 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
 
   return (
     <div className="feedback-root" ref={rootRef}>
-      {!panelOpen && <button className="feedback-fab" type="button" onClick={startNote} aria-label="Open feedback notebook"><span className="feedback-fab-mark" aria-hidden="true">F</span><span>Feedback</span>{mergedNotes.filter((note) => openStatuses.has(note.status)).length > 0 && <span className="feedback-count">{mergedNotes.filter((note) => openStatuses.has(note.status)).length}</span>}</button>}
+      {!panelOpen && !selectionMode && <button className="feedback-fab" type="button" onClick={startNote} aria-label="Open feedback notebook"><span className="feedback-fab-mark" aria-hidden="true">F</span><span>Feedback</span>{mergedNotes.filter((note) => openStatuses.has(note.status)).length > 0 && <span className="feedback-count">{mergedNotes.filter((note) => openStatuses.has(note.status)).length}</span>}</button>}
+      {selectionMode && <div className="feedback-select-banner" role="status"><span>Select an element or section. Its action will not run.</span><button type="button" onClick={() => { setSelectionMode(false); setPanelOpen(true) }}>Cancel</button></div>}
       {panelOpen && <>
         <button className="feedback-dismiss-layer" type="button" aria-label="Close feedback notebook" onClick={() => { setPanelOpen(false); setSelectionMode(false) }} />
         <section className={`feedback-panel${keyboardOpen ? ' keyboard-open' : ''}`} role="dialog" aria-modal="true" aria-label="Feedback notebook">
@@ -542,7 +553,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
           </header>
           <nav className="feedback-tabs" aria-label="Feedback notebook sections">
             <button type="button" className={tab === 'write' ? 'active' : ''} onClick={() => { setTab('write'); setOpenNote(null) }}>Write feedback</button>
-            <button type="button" className={tab === 'notes' ? 'active' : ''} onClick={() => { setTab('notes'); setOpenNote(null); refreshRemote() }}>Notebook <span>{mergedNotes.length}</span></button>
+            <button type="button" className={tab === 'notes' ? 'active' : ''} onClick={() => { setTab('notes'); setOpenNote(null); refreshRemote(); refreshMessages() }}>Inbox &amp; notebook <span>{messages.length || mergedNotes.length}</span></button>
           </nav>
           <div className="feedback-body">
             {storageError && <div className="feedback-message error" role="alert">{storageError}<button type="button" onClick={() => exportReport(false)}>Download a copy</button></div>}
@@ -560,7 +571,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
                   {draft?.context?.element && <div><dt>Selected</dt><dd>{draft.context.element.label} · {draft.context.element.type}<code>{draft.context.element.identifier}</code></dd></div>}
                 </dl>
               </div>
-              <div className="feedback-pick-row"><button type="button" className="feedback-pick" onClick={() => setSelectionMode(true)}>Select something on this page</button><button type="button" className={!draft?.context?.element ? 'selected' : ''} onClick={() => updateDraft('context', { ...(draft?.context || current), element: null, section: '', dialog: '' })}>Whole page</button></div>
+              <div className="feedback-pick-row"><button type="button" className="feedback-pick" onClick={() => { setSelectionMode(true); setPanelOpen(false) }}>Select something on this page</button><button type="button" className={!draft?.context?.element ? 'selected' : ''} onClick={() => updateDraft('context', { ...(draft?.context || current), element: null, section: '', dialog: '' })}>Whole page</button></div>
               {selectionMode && <div className="feedback-select-hint" role="status">Select a visible control or section. Its normal action will be blocked. Press Escape to cancel.</div>}
               {duplicate && <div className="feedback-duplicate" role="alert">
                 <strong>{duplicate.kind === 'exact' ? `This feedback is already recorded as ${duplicate.note.id}. Current status: ${duplicate.note.status}.` : `Possible match: ${duplicate.note.id} (${duplicate.note.status}). Review it before creating a separate report.`}</strong>
@@ -600,7 +611,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
               {openNote.sent ? <span className="feedback-shared-tag">Sent to Dibia · {formatDate(openNote.sentAt || openNote.createdAt)}</span> : <button type="button" className="feedback-send-link" disabled={!api?.send || busy} onClick={() => sendNote(openNote)}>Send to the Dibia team</button>}
             </div>}
             {tab === 'notes' && <div className="feedback-list">
-              {messages.length > 0 && <section className="feedback-hospital-inbox"><strong>Hospital messages</strong>{messages.map((message) => <article key={message.id}><time>{message.senderHospital || 'Dibia Console'} → {message.recipientHospital || workspace} · {formatDate(message.sentAt)}</time><p>{message.body}</p></article>)}</section>}
+              {app === 'HMS' && <section className="feedback-hospital-inbox"><div className="feedback-detail-title"><strong>Hospital messages</strong><button type="button" className="feedback-send-link" onClick={refreshMessages}>Refresh inbox</button></div>{messages.length ? messages.map((message) => <article key={message.id}><time>{message.senderHospital || 'Dibia Console'} → {message.recipientHospital || workspace} · {formatDate(message.sentAt)}</time><p>{message.body}</p></article>) : <div className="feedback-empty">No messages have arrived for this hospital yet.</div>}</section>}
               {unseenUpdates.length > 0 && <section className="feedback-unseen"><strong>Updates since your last review</strong>{unseenUpdates.map(({ note, update }) => <button type="button" key={update.id} onClick={() => { setOpenNote(note); setTab('write'); const next = { ...reviewedUpdates, [note.id]: new Date().toISOString() }; setReviewedUpdates(next); try { localStorage.setItem(reviewKey, JSON.stringify(next)) } catch { setStorageError('Could not save the update review marker on this browser.') } }}><b>{note.id} · {update.status || update.kind}</b><span>{update.text}</span></button>)}</section>}
               <div className="feedback-list-tools"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search feedback" aria-label="Search feedback" /><select value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="Filter feedback">{['Outstanding', 'All', ...statuses].map((value) => <option key={value}>{value}</option>)}</select></div>
               <label className="feedback-history-toggle"><input type="checkbox" checked={includeHistory} onChange={(event) => setIncludeHistory(event.target.checked)} /> Include full history in exports</label>

@@ -4,3 +4,4 @@
 .feedback-root button,.feedback-root input,.feedback-root select,.feedback-root textarea{font-family:inherit}.feedback-root button{font-weight:600}.feedback-write>small{color:#68736f;font-size:11px}
 .feedback-button.full{width:100%}
 .feedback-action-hint{display:block;color:#697571;font-size:11px;line-height:1.45}
+.feedback-select-banner{position:fixed;z-index:1100;top:12px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:14px;max-width:calc(100vw - 24px);padding:10px 14px;border:1px solid #d6dfdb;border-radius:10px;background:#fff;box-shadow:0 8px 28px #152f3033;color:#263b36;font-size:13px}.feedback-select-banner,.feedback-select-banner *{cursor:auto!important}.feedback-select-banner button{flex:none;border:0;border-radius:7px;padding:7px 10px;background:#0b6e6e;color:#fff;cursor:pointer!important}.feedback-select-banner button:focus-visible{outline:3px solid #f0a644;outline-offset:2px}

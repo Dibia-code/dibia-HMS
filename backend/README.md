@@ -14,7 +14,7 @@ Copy `.env.example` to `.env`, then set the local values. Keep `.env`, service a
 
 ## Production setup
 
-Set `NODE_ENV=production`, a random `JWT_SECRET` of at least 32 characters, `DEMO_MODE=false`, a console admin email and password of at least 16 characters, exact HTTPS `FRONTEND_ORIGINS`, and the Supabase variables in the environment section below. `SUPABASE_SECRET_KEY` and `DATABASE_URL` are server-only. For Render's IPv4 network, use the Supabase Session pooler connection string in `DATABASE_URL`. Set `DATABASE_SSL=true` for hosted Supabase.
+Set `NODE_ENV=production`, a random `JWT_SECRET` of at least 32 characters, `DEMO_MODE=false`, a console admin email and password of at least 16 characters, exact HTTPS `FRONTEND_ORIGINS`, and the Supabase variables in the environment section below. `SUPABASE_SECRET_KEY` and `DATABASE_URL` are server-only. Use the Supabase Transaction pooler connection string on port 6543 in `DATABASE_URL`. The backend uses transaction-scoped locks and does not require a persistent database session.
 
 Set `VITE_API_URL` on both frontend deployments to the backend URL. Add the frontend origins and password reset redirect URLs to Supabase Auth settings. Configure production SMTP in Supabase Auth before relying on password reset email. `/health/ready` checks the database, Auth API, and platform administrator profile.
 

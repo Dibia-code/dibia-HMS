@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { PERM } from '@/auth/permissions'
@@ -66,7 +66,7 @@ function ExpiryChip({ expiry, windows }) {
   )
 }
 
-function DrugDetail({ product, summary, movements, suppliers, canManage, config, onClose }) {
+function DrugDetail({ product, summary, movements, suppliers, canManage, config, quickReceive = false, onClose }) {
   const { user } = useAuth()
   const repo = useRepo()
   const toast = useToast()
@@ -75,6 +75,10 @@ function DrugDetail({ product, summary, movements, suppliers, canManage, config,
   const [threshold, setThreshold] = useState(String(summary.threshold))
   const actor = { id: user.userId, name: user.name }
   const isDefault = product.thresholdOverride == null
+
+  useEffect(() => {
+    if (quickReceive && canManage) setReceive({ ...emptyBatch(), price: String(product.price || '') })
+  }, [quickReceive, canManage, product.id, product.price])
 
   async function saveThreshold(value) {
     try {
@@ -245,6 +249,9 @@ export default function InventoryPage() {
   const [view, setView] = useState('grid')
   const [query, setQuery] = useState('')
   const [openId, setOpenId] = useState(null)
+  const [restockId, setRestockId] = useState(null)
+  const [receiveChooserOpen, setReceiveChooserOpen] = useState(false)
+  const [receiveProductId, setReceiveProductId] = useState('')
   const [draft, setDraft] = useState(null)
   const [errors, setErrors] = useState({})
   const fileRef = useRef(null)
@@ -259,7 +266,10 @@ export default function InventoryPage() {
       title: 'Inventory',
       subtitle: 'Stock, batches and expiry',
       actions: canManage && !draft && (
-        <Button variant="primary" icon="plus" onClick={() => { setErrors({}); setDraft(emptyDraft()) }}>Add product</Button>
+        <div className="row wrap">
+          <Button variant="ghost" icon="plus" onClick={() => { setReceiveProductId(''); setReceiveChooserOpen(true) }}>Receive stock</Button>
+          <Button variant="primary" icon="plus" onClick={() => { setErrors({}); setDraft(emptyDraft()) }}>Add product</Button>
+        </div>
       ),
     },
     [canManage, !!draft],
@@ -299,6 +309,11 @@ export default function InventoryPage() {
     const hit = items.find(({ product: p }) => p.barcode === q || p.name.toLowerCase() === q.toLowerCase())
     if (hit) setOpenId(hit.product.id)
     else toast.error('No product matches that barcode')
+  }
+
+  function openRestock(productId) {
+    setRestockId(productId)
+    setOpenId(productId)
   }
 
   const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }))
@@ -399,6 +414,22 @@ export default function InventoryPage() {
         </div>
       )}
 
+      {receiveChooserOpen && canManage && (
+        <Modal
+          title="Receive stock"
+          onClose={() => setReceiveChooserOpen(false)}
+          actions={<><Button variant="ghost" onClick={() => setReceiveChooserOpen(false)}>Cancel</Button><Button variant="primary" disabled={!receiveProductId} onClick={() => { openRestock(receiveProductId); setReceiveChooserOpen(false) }}>Continue</Button></>}
+        >
+          <Field label="Choose a drug to restock" htmlFor="receive-product">
+            <Select id="receive-product" value={receiveProductId} onChange={(event) => setReceiveProductId(event.target.value)}>
+              <option value="">Select a drug</option>
+              {(products || []).filter((product) => !product.archived).sort((a, b) => a.name.localeCompare(b.name)).map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+            </Select>
+          </Field>
+          <p className="text-muted mt-2">Next, enter the received batch, quantity, cost, supplier, and expiry date.</p>
+        </Modal>
+      )}
+
       {rows.length === 0 ? (
         <EmptyState icon="inventory" title={tab === 'all' ? 'No products yet' : 'Nothing here'} hint={tab === 'restock' ? 'Every drug is above its low-stock threshold.' : 'Try another filter or search.'} />
       ) : view === 'grid' ? (
@@ -406,7 +437,7 @@ export default function InventoryPage() {
           {rows.map(({ product: p, s }) => {
             const meta = STATUS_META[s.status]
             return (
-              <button key={p.id} type="button" className={`inv-card status-${meta.border}`} onClick={() => setOpenId(p.id)}>
+              <div key={p.id} className={`inv-card status-${meta.border}`} role="button" tabIndex={0} onClick={() => setOpenId(p.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setOpenId(p.id) } }}>
                 {p.image && <img className="inv-product-image" src={p.image} alt="" />}
                 <span className="ic-top">
                   <span className="ic-name">{p.name}</span>
@@ -418,7 +449,8 @@ export default function InventoryPage() {
                   <span>{s.liveBatches.length} batch{s.liveBatches.length === 1 ? '' : 'es'}</span>
                   <span>{s.nearest ? `Nearest expiry ${formatDate(s.nearest.expiry)}` : s.expiredQty ? 'Only expired stock' : 'No expiry set'}</span>
                 </span>
-              </button>
+                {canManage && <Button size="sm" variant="primary" icon="plus" onClick={(event) => { event.stopPropagation(); openRestock(p.id) }}>Receive stock</Button>}
+              </div>
             )
           })}
         </div>
@@ -434,6 +466,7 @@ export default function InventoryPage() {
               { key: 'e', header: 'Nearest expiry', render: ({ s }) => (s.nearest ? formatDate(s.nearest.expiry) : '-') },
               { key: 's', header: 'Status', render: ({ s }) => <Pill tone={STATUS_META[s.status].tone}>{STATUS_META[s.status].label}</Pill> },
               { key: 'p', header: 'Price', align: 'num', render: ({ product }) => naira(product.price) },
+              ...(canManage ? [{ key: 'restock', header: '', render: ({ product }) => <Button size="sm" variant="primary" icon="plus" onClick={(event) => { event.stopPropagation(); openRestock(product.id) }}>Receive stock</Button> }] : []),
             ]}
             rows={rows}
             getRowKey={({ product }) => product.id}
@@ -449,7 +482,8 @@ export default function InventoryPage() {
           suppliers={suppliers || []}
           canManage={canManage}
           config={config}
-          onClose={() => setOpenId(null)}
+          quickReceive={restockId === open.product.id}
+          onClose={() => { setOpenId(null); setRestockId(null) }}
         />
       )}
     </>

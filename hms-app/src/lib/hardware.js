@@ -78,7 +78,7 @@ async function openUsb(device) {
 
 export async function connectUsb(slot) {
   supported('usb')
-  const [device] = await navigator.usb.requestDevice({ acceptAllDevices: true })
+  const [device] = await navigator.usb.requestDevice({ filters: [] })
   if (!device) throw new Error('No USB device was selected.')
   const connection = await openUsb(device)
   activeUsb.set(slot, connection)
@@ -90,7 +90,7 @@ export async function connectUsb(slot) {
 
 export async function connectScanner() {
   supported('hid')
-  const [device] = await navigator.hid.requestDevice({ acceptAllDevices: true })
+  const [device] = await navigator.hid.requestDevice({ filters: [] })
   if (!device) throw new Error('No HID scanner was selected.')
   await device.open()
   listenScanner(device)

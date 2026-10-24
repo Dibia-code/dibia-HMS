@@ -89,10 +89,10 @@ export async function applySupabaseSync({ tenantId, actorId, ops, allowedEntitie
       rejected.push({ opId, code: 'forbidden', message: 'Your role does not have permission to change this record', retryable: false })
       continue
     }
+    const cashierOnlyFrontDesk = roles.includes('cashier') && !roles.some((role) => ['facility_admin', 'ceo_owner', 'super_admin', 'branch_manager', 'receptionist', 'doctor', 'nurse'].includes(role))
     const billingOnlyVisitEdit = entity === 'visits' && action === 'update' &&
       hasPermission({ permission: 'billing.edit', roles, grants, denies }) &&
-      !hasPermission({ permission: 'patients.manage', roles, grants, denies }) &&
-      !hasPermission({ permission: 'queue.manage', roles, grants, denies })
+      (cashierOnlyFrontDesk || (!hasPermission({ permission: 'patients.manage', roles, grants, denies }) && !hasPermission({ permission: 'queue.manage', roles, grants, denies })))
     if (billingOnlyVisitEdit) {
       const current = await getDomainRecord(tenantId, 'visits', recordId)
       const next = sanitizeSyncPayload(operation.payload)
