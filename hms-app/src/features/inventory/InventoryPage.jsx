@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { PERM } from '@/auth/permissions'
 import { useRepo } from '@/data/RepositoryContext'
@@ -243,6 +243,8 @@ export default function InventoryPage() {
   const repo = useRepo()
   const toast = useToast()
   const { config } = useHospital()
+  const location = useLocation()
+  const navigate = useNavigate()
 
   const [params] = useSearchParams()
   const [tab, setTab] = useState(TABS.some((t) => t.key === params.get('tab')) ? params.get('tab') : 'all')
@@ -255,6 +257,13 @@ export default function InventoryPage() {
   const [draft, setDraft] = useState(null)
   const [errors, setErrors] = useState({})
   const fileRef = useRef(null)
+
+  useEffect(() => {
+    if (!location.state?.openNewProduct || !canManage) return
+    setErrors({})
+    setDraft(emptyDraft())
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: { returnToPos: location.state.returnToPos } })
+  }, [canManage, location.pathname, location.search, location.state, navigate])
 
   const { data: products } = useLiveQuery(() => repo.list('products'), [repo])
   const { data: batches } = useLiveQuery(() => repo.list('batches'), [repo])
@@ -351,9 +360,15 @@ export default function InventoryPage() {
       })
       toast.success('Product added')
       setDraft(null)
+      if (location.state?.returnToPos) navigate(location.state.returnToPos, { replace: true })
     } catch (err) {
       toast.error(err.message || 'Could not save product')
     }
+  }
+
+  function closeProductForm() {
+    setDraft(null)
+    if (location.state?.returnToPos) navigate(location.state.returnToPos, { replace: true })
   }
 
   const open = openId ? items.find((i) => i.product.id === openId) : null
@@ -382,7 +397,7 @@ export default function InventoryPage() {
 
       {draft && canManage && (
         <div className="mb-3">
-          <FormPanel title="New product" submitLabel="Save product" onClose={() => setDraft(null)} onSubmit={save}>
+          <FormPanel title="New product" submitLabel="Save product" onClose={closeProductForm} onSubmit={save}>
             <FormGrid>
               <Field label="Product name" htmlFor="p-name" error={errors.name} required><Input id="p-name" value={draft.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Amoxicillin 500mg" /></Field>
               <Field label="Generic name" htmlFor="p-gen" hint="Used for substitutions and interaction checks"><Input id="p-gen" value={draft.genericName} onChange={(e) => set('genericName', e.target.value)} placeholder="e.g. amoxicillin" /></Field>

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { PERM } from '@/auth/permissions'
 import { useRepo } from '@/data/RepositoryContext'
@@ -20,6 +21,7 @@ const stockLabel = (p) => (p.quantity <= 0 ? 'Out of stock' : `${p.quantity} in 
 // and syncs (idempotently) on reconnect. The SyncChip in the topbar reflects it.
 export default function PosPage() {
   const { user, can } = useAuth()
+  const navigate = useNavigate()
   const repo = useRepo()
   const { config } = useHospital()
   const toast = useToast()
@@ -29,6 +31,7 @@ export default function PosPage() {
   const [payment, setPayment] = useState('cash')
   const [customerId, setCustomerId] = useState('')
   const [busy, setBusy] = useState(false)
+  const canManageInventory = can(PERM.INVENTORY_MANAGE)
 
   const { data: rawProducts } = useLiveQuery(() => repo.list('products'), [repo])
   const { data: batches } = useLiveQuery(() => repo.list('batches'), [repo])
@@ -38,7 +41,16 @@ export default function PosPage() {
   )
   const { data: customers } = useLiveQuery(() => repo.list('customers'), [repo])
 
-  usePageHeader({ title: 'New Sale', subtitle: 'Point of sale' }, [])
+  function openProductForm() {
+    navigate(`/${user.hospitalSlug}/inventory`, {
+      state: { openNewProduct: true, returnToPos: `/${user.hospitalSlug}/pos` },
+    })
+  }
+
+  usePageHeader({
+    title: 'New Sale',
+    subtitle: 'Point of sale',
+  }, [canManageInventory, user.hospitalSlug])
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -136,13 +148,18 @@ export default function PosPage() {
     <div className="pos-grid">
       {/* Product picker */}
       <div>
-        <SearchScanBar
-          value={query}
-          onChange={setQuery}
-          onScan={onScan}
-          autoFocus
-          placeholder="Search product, generic name, or scan barcode"
-        />
+        <div className="row wrap mb-2">
+          <div style={{ flex: '1 1 280px', minWidth: 220 }}>
+            <SearchScanBar
+              value={query}
+              onChange={setQuery}
+              onScan={onScan}
+              autoFocus
+              placeholder="Search product, generic name, or scan barcode"
+            />
+          </div>
+          {canManageInventory && <Button variant="ghost" icon="plus" onClick={openProductForm}>Add product</Button>}
+        </div>
         {results.length === 0 ? (
           <div className="mt-3">
             <EmptyState icon="search" title="No products found" hint="Try a different name or barcode." />

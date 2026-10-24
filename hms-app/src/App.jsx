@@ -6,6 +6,7 @@ import { ToastProvider } from '@/components'
 import { Icon } from '@/components/Icon'
 import { router } from '@/router'
 import CookieConsent from '@/components/CookieConsent'
+import PwaUpdatePrompt from '@/components/PwaUpdatePrompt'
 
 // Boot gate — hold the router until the local DB is seeded so no screen queries
 // an empty store on first load.
@@ -40,6 +41,7 @@ export default function App() {
               <RouterProvider router={router} />
               <CookieConsent />
             </Boot>
+            <PwaUpdatePrompt />
           </ThemeProvider>
         </AuthProvider>
       </RepositoryProvider>

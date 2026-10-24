@@ -160,8 +160,13 @@ export default function HospitalsPage() {
                   <div className="hospital-detail"><span>Tier</span><select className="tier-select" aria-label={`Tier for ${p.name}`} value={normalisePlan(p.plan)} onChange={(e) => changeTier(p, e.target.value)}>{TIERS.map((t) => <option key={t.key} value={t.key}>{t.key}</option>)}</select></div>
                   <div className="hospital-detail hospital-detail-action"><span>Account action</span><Button variant="secondary" onClick={() => toggleSuspend(p)}>{p.status === 'suspended' ? 'Reactivate' : 'Suspend'}</Button></div>
                   <div className="hospital-modules-section">
-                    <div className="hospital-modules-heading"><strong>Enabled modules</strong><Button variant="secondary" onClick={() => toggleAllModules(p)}>{allGranted ? 'Lock all' : 'Grant Pro access'}</Button></div>
-                    <div className="hospital-module-checks">{moduleCatalog.map((module) => <label key={module.code}><input type="checkbox" checked={(Array.isArray(p.modules) ? p.modules : []).includes(module.code)} onChange={() => toggleModule(p, module)} />{moduleTitle(module)}</label>)}</div>
+                    <div className="hospital-modules-heading"><div><strong>Hospital module access</strong><div className="tenant-sub">Select a module to enable or disable it for this hospital.</div></div><Button variant="secondary" onClick={() => toggleAllModules(p)}>{allGranted ? 'Lock all' : 'Grant Pro access'}</Button></div>
+                    <div className="hospital-module-checks">{moduleCatalog.map((module) => {
+                      const state = p.moduleStates?.find((item) => item.code === module.code)
+                      const active = (Array.isArray(p.modules) ? p.modules : []).includes(module.code)
+                      const status = active ? 'Active' : state?.entitlementStatus === 'entitled' ? 'Available, off' : 'Locked'
+                      return <label key={module.code}><input type="checkbox" checked={active} onChange={() => toggleModule(p, module)} /><span>{moduleTitle(module)}<span className="tenant-sub">{status}</span></span></label>
+                    })}</div>
                   </div>
                 </div>
               )}
