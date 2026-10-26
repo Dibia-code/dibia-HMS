@@ -92,10 +92,10 @@ export default function DevicesPage() {
         body: JSON.stringify({ id, name: name.trim(), token, assignedStaffId }),
         })
         const result = await response.json().catch(() => ({}))
-        if (!response.ok) throw new Error(result.message || 'Could not save the access link to the backend')
+        if (!response.ok) throw new Error(result.message || 'Could not save the access link')
         setBackendDevices((previous) => [...(previous || []), result.device])
       } catch (error) {
-        toast.error(error.message || 'Could not save the access link to the backend')
+        toast.error(error.message || 'Could not save the access link')
         return
       }
     } else {
@@ -192,7 +192,7 @@ export default function DevicesPage() {
         <div className="text-muted mt-2">The staff member opens the link on the computer they will use. Once they request access, approve that computer here. Revoke blocks it immediately; approve can restore a revoked computer.</div>
       </Card>
 
-      {backendError && <div className="lock-note" role="status">Device status could not refresh: {backendError}</div>}
+      {backendError && <div className="lock-note" role="status">Device status could not refresh. Check your connection and try again.</div>}
 
       <Card>
         <DataTable

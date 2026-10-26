@@ -133,7 +133,7 @@ export default function Login() {
               autoFocus
             />
           </Field>
-          <Field label={backendAuthEnabled() ? 'Access code or password' : 'Password or PIN'} htmlFor="password" hint={backendAuthEnabled() ? 'New staff use the temporary access code from their admin. Change it with Forgot password.' : 'Demo build: any password works.'}>
+          <Field label={backendAuthEnabled() ? 'Access code or password' : 'Password or PIN'} htmlFor="password" hint={backendAuthEnabled() ? 'New staff use the temporary access code from their admin. Change it with Forgot password.' : 'Use any password or PIN in this preview.'}>
             <Input
               id="password"
               type="password"

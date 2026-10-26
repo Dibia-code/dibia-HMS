@@ -266,14 +266,14 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
   useEffect(() => {
     if (!panelOpen || !api?.list) return undefined
     let active = true
-    api.list().then((items) => { if (active) { setRemoteNotes(items || []); setSyncError('') } }).catch(() => { if (active) setSyncError('Shared feedback could not be refreshed. Your local notes remain available.') })
+    api.list().then((items) => { if (active) { setRemoteNotes(items || []); setSyncError('') } }).catch(() => { if (active) setSyncError('Shared feedback could not be refreshed. Your saved notes are still available here.') })
     return () => { active = false }
   }, [panelOpen, api])
 
   useEffect(() => {
     if (!panelOpen || !api?.messages) return undefined
     let active = true
-    api.messages().then((items) => { if (active) setMessages(items || []) }).catch(() => { if (active) setSyncError('Hospital messages could not be loaded. Check the backend connection and try again.') })
+    api.messages().then((items) => { if (active) setMessages(items || []) }).catch(() => { if (active) setSyncError('Hospital messages could not be loaded. Check your connection and try again.') })
     return () => { active = false }
   }, [panelOpen, api])
 
@@ -310,7 +310,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
       else localStorage.removeItem(draftKey)
       setStorageError('')
     } catch {
-      setStorageError('This browser could not save to local storage. Keep a copy with Download feedback before closing this page.')
+      setStorageError('Your draft could not be saved. Download or copy it before closing this page.')
     }
   }
 
@@ -321,7 +321,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
       setStorageError('')
       return true
     } catch {
-      setStorageError('Storage is unavailable or full. Your current text is still on screen; download or copy it before leaving.')
+      setStorageError('Your notes could not be saved. Your current text is still on screen; download or copy it before leaving.')
       return false
     }
   }
@@ -336,12 +336,12 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
 
   async function refreshRemote() {
     if (!api?.list) return
-    try { setRemoteNotes(await api.list()); setSyncError('') } catch { setSyncError('Shared feedback could not be refreshed. Your local notes remain available.') }
+    try { setRemoteNotes(await api.list()); setSyncError('') } catch { setSyncError('Shared feedback could not be refreshed. Your saved notes are still available here.') }
   }
 
   async function refreshMessages() {
     if (!api?.messages) return
-    try { setMessages(await api.messages()); setSyncError('') } catch { setSyncError('Hospital messages could not be loaded. Check the backend connection and try again.') }
+    try { setMessages(await api.messages()); setSyncError('') } catch { setSyncError('Hospital messages could not be loaded. Check your connection and try again.') }
   }
 
   async function sendHospitalMessage() {
@@ -404,7 +404,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
 
   async function sendNote(note) {
     if (!api?.send) {
-      setSyncError('Sending is not configured here. This note is saved only in this browser.')
+      setSyncError('Sharing is unavailable right now. This note is saved on this device.')
       return
     }
     setBusy(true)
@@ -548,7 +548,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
         <button className="feedback-dismiss-layer" type="button" aria-label="Close feedback notebook" onClick={() => { setPanelOpen(false); setSelectionMode(false) }} />
         <section className={`feedback-panel${keyboardOpen ? ' keyboard-open' : ''}`} role="dialog" aria-modal="true" aria-label="Feedback notebook">
           <header className="feedback-header">
-            <div><span className="feedback-eyebrow">DIBIA HMS REVIEW</span><h2>Feedback notebook</h2><p>Saved in this browser. It does not automatically follow you to another device.</p></div>
+            <div><span className="feedback-eyebrow">DIBIA HMS REVIEW</span><h2>Feedback notebook</h2><p>Your notes stay on this device unless you send them. They will not automatically appear on your other devices.</p></div>
             <button type="button" className="feedback-icon-btn" aria-label="Close feedback notebook" onClick={() => { setPanelOpen(false); setSelectionMode(false) }}>×</button>
           </header>
           <nav className="feedback-tabs" aria-label="Feedback notebook sections">
@@ -591,9 +591,9 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
               </div>
               <div className="feedback-save-state" aria-live="polite">{draft ? 'Draft saved on this device' : 'Start a note to capture this page'}</div>
               <div className="feedback-actions"><button type="button" className="feedback-button secondary" onClick={() => exportReport(false)}>Download feedback</button><button type="button" className="feedback-button primary" disabled={!draft?.text?.trim()} onClick={() => saveNote(false)}>Save on this device</button></div>
-              <button type="button" className="feedback-button primary full" disabled={!draft?.text?.trim() || !api?.send || busy} onClick={async () => { const saved = await saveNote(false); if (saved) await sendNote(saved) }}>{busy ? 'Sending…' : api?.send ? 'Save and share with the Dibia team' : 'In-app sharing needs a signed-in backend session'}</button>
+              <button type="button" className="feedback-button primary full" disabled={!draft?.text?.trim() || !api?.send || busy} onClick={async () => { const saved = await saveNote(false); if (saved) await sendNote(saved) }}>{busy ? 'Sending…' : api?.send ? 'Save and share with the Dibia team' : 'Sharing is unavailable right now'}</button>
               {!draft?.text?.trim() && <small className="feedback-action-hint">Write your feedback above to enable saving and sharing.</small>}
-              {draft?.text?.trim() && !api?.send && <small className="feedback-action-hint">Sharing is available after signing in to a hospital account connected to the backend. You can still save this note on this device.</small>}
+              {draft?.text?.trim() && !api?.send && <small className="feedback-action-hint">Sign in to your hospital account to share this note with the Dibia team. You can still save it on this device.</small>}
             </div>}
             {tab === 'write' && !openNote && api?.sendMessage && <div className="feedback-hospital-message"><strong>{app === 'Console' ? 'Send a message to a hospital' : 'Share a message with another hospital'}</strong><label>Recipient<select value={messageRecipient} onChange={(event) => setMessageRecipient(event.target.value)}><option value="">Choose a hospital</option>{hospitals.map((hospital) => <option key={hospital.id} value={hospital.id}>{hospital.name}</option>)}</select></label><label>Message<textarea className="feedback-textarea compact" rows={3} value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} placeholder="Write a message for this hospital's staff" /></label><small>Only the selected hospital can read this message. Do not include patient information or credentials.</small><button type="button" className="feedback-button primary" disabled={!messageDraft.trim() || !messageRecipient || busy} onClick={sendHospitalMessage}>Send to hospital staff</button></div>}
             {tab === 'write' && openNote && <div className="feedback-detail">
@@ -612,14 +612,14 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
             </div>}
             {tab === 'notes' && <div className="feedback-list">
               {app === 'HMS' && <section className="feedback-hospital-inbox"><div className="feedback-detail-title"><strong>Hospital messages</strong><button type="button" className="feedback-send-link" onClick={refreshMessages}>Refresh inbox</button></div>{messages.length ? messages.map((message) => <article key={message.id}><time>{message.senderHospital || 'Dibia Console'} → {message.recipientHospital || workspace} · {formatDate(message.sentAt)}</time><p>{message.body}</p></article>) : <div className="feedback-empty">No messages have arrived for this hospital yet.</div>}</section>}
-              {unseenUpdates.length > 0 && <section className="feedback-unseen"><strong>Updates since your last review</strong>{unseenUpdates.map(({ note, update }) => <button type="button" key={update.id} onClick={() => { setOpenNote(note); setTab('write'); const next = { ...reviewedUpdates, [note.id]: new Date().toISOString() }; setReviewedUpdates(next); try { localStorage.setItem(reviewKey, JSON.stringify(next)) } catch { setStorageError('Could not save the update review marker on this browser.') } }}><b>{note.id} · {update.status || update.kind}</b><span>{update.text}</span></button>)}</section>}
+              {unseenUpdates.length > 0 && <section className="feedback-unseen"><strong>Updates since your last review</strong>{unseenUpdates.map(({ note, update }) => <button type="button" key={update.id} onClick={() => { setOpenNote(note); setTab('write'); const next = { ...reviewedUpdates, [note.id]: new Date().toISOString() }; setReviewedUpdates(next); try { localStorage.setItem(reviewKey, JSON.stringify(next)) } catch { setStorageError('Could not save that you reviewed this update.') } }}><b>{note.id} · {update.status || update.kind}</b><span>{update.text}</span></button>)}</section>}
               <div className="feedback-list-tools"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search feedback" aria-label="Search feedback" /><select value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="Filter feedback">{['Outstanding', 'All', ...statuses].map((value) => <option key={value}>{value}</option>)}</select></div>
               <label className="feedback-history-toggle"><input type="checkbox" checked={includeHistory} onChange={(event) => setIncludeHistory(event.target.checked)} /> Include full history in exports</label>
-              <div className="feedback-export-actions"><button type="button" className="feedback-button secondary" onClick={() => exportReport(true)}>Copy feedback</button><button type="button" className="feedback-button secondary" onClick={() => exportReport(false)}>Download feedback</button>{notes.length > 0 && <button type="button" className="feedback-button quiet" onClick={() => setDeleteConfirm(true)}>Delete all local</button>}</div>
+              <div className="feedback-export-actions"><button type="button" className="feedback-button secondary" onClick={() => exportReport(true)}>Copy feedback</button><button type="button" className="feedback-button secondary" onClick={() => exportReport(false)}>Download feedback</button>{notes.length > 0 && <button type="button" className="feedback-button quiet" onClick={() => setDeleteConfirm(true)}>Delete all notes</button>}</div>
               {copyText && <div className="feedback-copy-fallback"><label htmlFor="feedback-copy-fallback">Select and copy the report</label><textarea id="feedback-copy-fallback" value={copyText} readOnly onFocus={(event) => event.target.select()} /></div>}
-              {deleteConfirm && <div className="feedback-confirm" role="alertdialog" aria-label="Confirm bulk deletion"><p>Delete all local feedback notes and drafts from this browser? Sent reports remain in the Dibia team inbox.</p><button type="button" className="feedback-button quiet" onClick={() => setDeleteConfirm(false)}>Cancel</button><button type="button" className="feedback-button danger" onClick={() => { if (persistNotes([])) { persistDraft(null); setDeleteConfirm(false) } }}>Delete all local notes</button></div>}
-              {matchingNotes.length ? matchingNotes.map((note) => <NoteCard key={note.id} note={note} onOpen={(item) => { setOpenNote(item); setTab('write'); const next = { ...reviewedUpdates, [item.id]: new Date().toISOString() }; setReviewedUpdates(next); try { localStorage.setItem(reviewKey, JSON.stringify(next)) } catch { setStorageError('Could not save the update review marker on this browser.') } }} />) : <div className="feedback-empty">No notes match this view.</div>}
-              <div className="feedback-storage-note">Notes and drafts on this account stay in this browser unless you send a report. Developers must update sent reports in the Console.</div>
+              {deleteConfirm && <div className="feedback-confirm" role="alertdialog" aria-label="Confirm bulk deletion"><p>Delete all notes and drafts saved on this device? Sent reports remain in the Dibia team inbox.</p><button type="button" className="feedback-button quiet" onClick={() => setDeleteConfirm(false)}>Cancel</button><button type="button" className="feedback-button danger" onClick={() => { if (persistNotes([])) { persistDraft(null); setDeleteConfirm(false) } }}>Delete all notes</button></div>}
+              {matchingNotes.length ? matchingNotes.map((note) => <NoteCard key={note.id} note={note} onOpen={(item) => { setOpenNote(item); setTab('write'); const next = { ...reviewedUpdates, [item.id]: new Date().toISOString() }; setReviewedUpdates(next); try { localStorage.setItem(reviewKey, JSON.stringify(next)) } catch { setStorageError('Could not save that you reviewed this update.') } }} />) : <div className="feedback-empty">No notes match this view.</div>}
+              <div className="feedback-storage-note">Unsent notes stay on this device and will not automatically appear on your other devices. Send a report to share it with the Dibia team.</div>
             </div>}
           </div>
         </section>

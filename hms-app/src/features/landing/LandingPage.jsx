@@ -17,7 +17,7 @@ function chipVisual(online, big) {
     }
   }
   return {
-    label: 'Offline, saving locally',
+    label: 'Keep working offline',
     style: { background: big ? 'rgba(232,163,61,0.2)' : '#FDF2E1', color: big ? '#E8A33D' : '#9C6A17' },
     pulse: '#E8A33D',
   }
@@ -218,10 +218,10 @@ export default function LandingPage() {
           <div className="reveal">
             <p className="section-tag">The thing most systems get wrong</p>
             <h2 className="section-title">Patient care does not stop when the network does.</h2>
-            <p style={{ marginBottom: 22 }}>Every registration, note, lab entry and payment is written to the device first, using IndexedDB, so nothing is lost or blocked by a bad connection. When you are back online, everything reconciles automatically.</p>
+            <p style={{ marginBottom: 22 }}>Registrations, notes, lab entries and payments are saved on your device first, so you can keep working through a connection problem. When you are back online, your work syncs automatically.</p>
             <ul className="offline-list">
               <li><Check /> A status indicator is always visible, so staff know if they are online or offline.</li>
-              <li><Check /> Work done offline queues locally and syncs the moment connectivity returns.</li>
+              <li><Check /> Changes made offline sync when your connection returns.</li>
               <li><Check /> No duplicate records or payments, because sync is built to reconcile safely.</li>
             </ul>
           </div>

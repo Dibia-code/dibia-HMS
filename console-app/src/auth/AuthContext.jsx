@@ -84,7 +84,7 @@ export function AuthProvider({ children }) {
       setConsoleAccessToken(null)
     } else {
       if (!backendAuthEnabled()) {
-        throw new Error('Backend sign-in is disabled. Use the local development demo until backend auth is ready.')
+        throw new Error('Sign-in is unavailable in this preview. Please use a demo account.')
       }
       const response = await fetch(`${apiBase()}/auth/console/login`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },

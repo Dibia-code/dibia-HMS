@@ -35,7 +35,7 @@ export default function DeviceJoin() {
             setDevice(response.ok ? result.device : null)
           }
         } catch (error) {
-          if (alive) setLoadError(error instanceof Error && error.message !== 'Failed to fetch' ? error.message : 'Could not reach the backend to verify this device link. Check the app address and backend connection.')
+          if (alive) setLoadError(error instanceof Error && error.message !== 'Failed to fetch' ? error.message : 'Could not verify this device link. Check your internet connection and try again.')
         }
         return
       }

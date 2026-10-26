@@ -6,7 +6,7 @@ import { Icon } from '../Icon'
 import { syncStatus } from './SyncChip'
 
 const OFFLINE_TEXT =
-  "You're offline. Data is saved locally and will sync automatically when your connection returns. Some features may be unavailable."
+  "You're offline. Changes are saved on this device and will sync when you're connected again. Some features may be unavailable."
 
 export function SyncBanner() {
   const state = useSync()

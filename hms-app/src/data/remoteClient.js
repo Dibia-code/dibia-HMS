@@ -50,7 +50,7 @@ export class RemoteApiClient {
       // Mirror a real network failure so the sync engine keeps ops queued.
       throw new Error('offline')
     }
-    if (!this.configured) throw new Error('Sync server is not configured; local changes remain on this device')
+    if (!this.configured) throw new Error('Changes are saved on this device, but syncing is unavailable right now.')
     const response = await this.request(`${this.baseUrl}/sync`, {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -72,7 +72,7 @@ export class RemoteApiClient {
   }
 
   async snapshot(cursor = null) {
-    if (!this.configured) throw new Error('Hospital data server is not configured')
+    if (!this.configured) throw new Error('Hospital information is unavailable right now. Try again later.')
     const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
     const response = await this.request(`${this.baseUrl}/sync/snapshot${query}`, { credentials: 'include', headers: {} })
     const result = await response.json().catch(() => ({}))
@@ -81,7 +81,7 @@ export class RemoteApiClient {
   }
 
   async uploadProductImage(image) {
-    if (!this.configured) throw new Error('Sign in with the hospital backend before uploading an image')
+    if (!this.configured) throw new Error('Sign in to your hospital account before uploading an image')
     const response = await this.request(`${this.baseUrl}/products/image`, {
       method: 'POST',
       credentials: 'include',
@@ -89,8 +89,8 @@ export class RemoteApiClient {
       body: image,
     })
     const result = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(result.message || `Image upload failed (${response.status})`)
-    if (!result.imageUrl) throw new Error('Image upload did not return a URL')
+    if (!response.ok) throw new Error(result.message || 'Could not upload the product photo. Try again.')
+    if (!result.imageUrl) throw new Error('Could not upload the product photo. Try again.')
     return result.imageUrl
   }
 }

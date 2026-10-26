@@ -13,7 +13,7 @@ export function syncStatus({ configured = true, authenticated = true, online, sy
 
 const LABELS = {
   online: { full: 'Online', short: 'Online' },
-  local: { full: 'Saved locally', short: 'Local' },
+  local: { full: 'Saved on this device', short: 'On device' },
   auth: { full: 'Reconnect to sync', short: 'Reconnect' },
   offline: { full: 'Offline — syncing when reconnected', short: 'Offline' },
   syncing: { full: 'Syncing...', short: 'Syncing' },
@@ -34,13 +34,13 @@ export function SyncChip() {
       : status === 'failed'
         ? state.lastError || 'Tap to retry'
         : status === 'local'
-          ? `${state.pending} change${state.pending === 1 ? '' : 's'} saved on this device. This build has no server sync endpoint configured.`
+          ? `${state.pending} change${state.pending === 1 ? '' : 's'} saved on this device. They are not syncing to your other devices yet.`
           : status === 'auth'
-            ? state.lastError || `${state.pending} change${state.pending === 1 ? '' : 's'} are saved here. Reconnect or sign in again to sync them.`
+            ? state.lastError || `${state.pending} change${state.pending === 1 ? '' : 's'} saved on this device. Reconnect or sign in again to sync them.`
         : status === 'queued'
-          ? `${state.pending} change${state.pending === 1 ? '' : 's'} remain in the sync queue.`
+          ? `${state.pending} change${state.pending === 1 ? '' : 's'} waiting to sync.`
         : state.otherPending > 0
-          ? `${state.otherPending} queued change${state.otherPending === 1 ? '' : 's'} belong to another hospital or have no hospital assigned. They are being kept separate.`
+          ? `${state.otherPending} saved change${state.otherPending === 1 ? '' : 's'} belong to another hospital account. They have been kept separate.`
         : undefined
 
   return (

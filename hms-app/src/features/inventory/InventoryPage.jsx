@@ -356,7 +356,7 @@ export default function InventoryPage() {
     try {
       let imageUrl = draft.image || null
       if (draft.imageBlob && sync.remote.configured) imageUrl = await sync.remote.uploadProductImage(draft.imageBlob)
-      else if (draft.imageBlob && import.meta.env.PROD) throw new Error('Connect to the hospital backend before saving a product image')
+      else if (draft.imageBlob && import.meta.env.PROD) throw new Error('Product photos are unavailable right now. Try again later.')
       const product = {
         name: draft.name.trim(), genericName: draft.genericName.trim().toLowerCase(), category: draft.category.trim(),
         strength: draft.strength.trim(), dosageForm: draft.dosageForm,
@@ -432,7 +432,7 @@ export default function InventoryPage() {
               <Field label="Cost price per unit" htmlFor="p-cost"><Input id="p-cost" type="number" min="0" value={draft.cost} onChange={(e) => set('cost', e.target.value)} /></Field>
               <Field label="Prescription only" span2><Switch checked={draft.rx} onChange={(on) => set('rx', on)} label={draft.rx ? 'Requires prescription' : 'Over the counter'} /></Field>
               <Field label="Controlled drug" span2 hint="A pharmacist PIN is asked for before this drug is dispensed."><Switch checked={draft.controlled} onChange={(on) => set('controlled', on)} label={draft.controlled ? 'Controlled' : 'Not controlled'} /></Field>
-              <Field label="Product image" span2 hint={sync.remote.configured ? 'Compressed and uploaded to Supabase when you save the product.' : 'Stored with this local demo product on this device.'}>
+              <Field label="Product image" span2 hint="Optional. Add a clear photo to help identify this product.">
                 <div className="img-picker">
                   {draft.image ? <img className="img-thumb-lg" src={draft.image} alt="Product preview" /> : <span className="img-thumb-lg placeholder"><Icon name="image" size={26} /></span>}
                   <div className="img-picker-actions">

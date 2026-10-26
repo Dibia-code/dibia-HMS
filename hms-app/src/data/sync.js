@@ -87,7 +87,7 @@ export class SyncEngine {
     try {
       const response = await this.remote.request(`${this.remote.baseUrl}/me`, { credentials: 'include', headers: {} })
       const result = await response.json().catch(() => ({}))
-      if (!response.ok || !result.accessToken || !result.user?.id) throw new Error(result.message || 'Sign in again to resume server sync')
+      if (!response.ok || !result.accessToken || !result.user?.id) throw new Error(result.message || 'Sign in again to sync your saved changes')
       this.remote.setAccessToken(result.accessToken, result.user.hospitalId || result.tenant?.id, result.user.branchId || result.branch?.id)
       this.lastError = null
       this._emit()

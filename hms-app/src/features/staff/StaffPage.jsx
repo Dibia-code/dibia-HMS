@@ -169,7 +169,7 @@ export default function StaffPage() {
 
   async function resetPassword(row) {
     if (!backendAuthEnabled()) {
-      toast.info('Password reset emails require backend authentication; no password was changed.')
+      toast.info('Password reset is unavailable right now. No password was changed.')
       return
     }
     try {
