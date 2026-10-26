@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { PERM } from '@/auth/permissions'
-import { useRepo } from '@/data/RepositoryContext'
+import { useRepo, useSyncEngine } from '@/data/RepositoryContext'
 import { useLiveQuery } from '@/hooks/useLiveQuery'
 import { useHospital } from '@/hooks/useHospital'
 import {
@@ -12,7 +12,7 @@ import {
 import { naira, formatDate, formatDateTime, number } from '@/lib/format'
 import { summarise, STATUS_META, daysLeft, isExpired, expiryWindowLabel, unitsFrom } from '@/lib/stock'
 
-function readImageAsDataUrl(file, max = 512) {
+function prepareProductImage(file, max = 512) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onerror = () => reject(new Error('Could not read that image'))
@@ -25,7 +25,10 @@ function readImageAsDataUrl(file, max = 512) {
         canvas.width = Math.round(img.width * scale)
         canvas.height = Math.round(img.height * scale)
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
-        resolve(canvas.toDataURL('image/jpeg', 0.82))
+        canvas.toBlob((blob) => {
+          if (!blob) return reject(new Error('Could not prepare that image'))
+          resolve({ preview: canvas.toDataURL('image/jpeg', 0.82), blob })
+        }, 'image/jpeg', 0.82)
       }
       img.src = reader.result
     }
@@ -49,7 +52,7 @@ const MOVE_LABEL = {
 
 const emptyDraft = () => ({
   name: '', genericName: '', category: '', unit: 'tablet', packSize: '10', cartonSize: '10', barcode: '',
-  rx: false, controlled: false, image: '', price: '', batchNo: '', mfgDate: '', expiry: '', quantity: '', cost: '', supplier: '',
+  strength: '', dosageForm: 'solid', rx: false, controlled: false, image: '', imageBlob: null, price: '', batchNo: '', mfgDate: '', expiry: '', quantity: '', cost: '', supplier: '',
 })
 
 const emptyBatch = () => ({ batchNo: '', mfgDate: '', expiry: '', quantity: '', unit: 'unit', cost: '', price: '', supplier: '' })
@@ -126,7 +129,7 @@ function DrugDetail({ product, summary, movements, suppliers, canManage, config,
         <Pill tone={meta.tone}>{meta.label}</Pill>
         {product.controlled && <Pill tone="pending">Controlled drug</Pill>}
         {product.rx && <Pill tone="info" dot={false}>Prescription</Pill>}
-        <span className="text-muted">{product.genericName || 'No generic name'} · {product.category || 'No category'}</span>
+        <span className="text-muted">{[product.genericName || 'No generic name', product.strength, product.dosageForm === 'liquid' ? 'Liquid / fluid' : product.dosageForm === 'solid' ? 'Solid' : '', product.category].filter(Boolean).join(' · ')}</span>
       </div>
       <div className="stat-row cols-3 mb-2">
         <div className="stat-card"><div className="label">Available to dispense</div><div className="value">{number(summary.sellable)}</div><div className="delta">{product.unit}s</div></div>
@@ -241,6 +244,7 @@ export default function InventoryPage() {
   const { user, can } = useAuth()
   const canManage = can(PERM.INVENTORY_MANAGE)
   const repo = useRepo()
+  const sync = useSyncEngine()
   const toast = useToast()
   const { config } = useHospital()
   const location = useLocation()
@@ -256,6 +260,7 @@ export default function InventoryPage() {
   const [receiveProductId, setReceiveProductId] = useState('')
   const [draft, setDraft] = useState(null)
   const [errors, setErrors] = useState({})
+  const [saving, setSaving] = useState(false)
   const fileRef = useRef(null)
 
   useEffect(() => {
@@ -305,7 +310,7 @@ export default function InventoryPage() {
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
-    let list = items.filter(({ product: p }) => !q || `${p.name} ${p.genericName || ''} ${p.category || ''} ${p.barcode || ''}`.toLowerCase().includes(q))
+    let list = items.filter(({ product: p }) => !q || `${p.name} ${p.genericName || ''} ${p.strength || ''} ${p.dosageForm || ''} ${p.category || ''} ${p.barcode || ''}`.toLowerCase().includes(q))
     if (tab === 'restock') list = list.filter((i) => ['low', 'out', 'expired'].includes(i.s.status)).sort((a, b) => a.s.criticality - b.s.criticality)
     else if (tab === 'expiring') list = list.filter((i) => i.s.expiringSoon).sort((a, b) => a.s.nearestDays - b.s.nearestDays)
     else if (tab === 'out') list = list.filter((i) => i.s.status === 'out')
@@ -332,27 +337,34 @@ export default function InventoryPage() {
     e.target.value = ''
     if (!file) return
     try {
-      set('image', await readImageAsDataUrl(file))
+      const image = await prepareProductImage(file)
+      setDraft((current) => ({ ...current, image: image.preview, imageBlob: image.blob }))
     } catch (err) {
       toast.error(err.message || 'Could not use that image')
     }
   }
 
   async function save() {
+    if (saving) return
     const e = {}
     if (!draft.name.trim()) e.name = 'Required'
     if (draft.price === '' || Number.isNaN(Number(draft.price))) e.price = 'Enter a price'
     if (draft.mfgDate && draft.expiry && draft.expiry <= draft.mfgDate) e.expiry = 'Expiry date must be after the manufacturing date'
     setErrors(e)
     if (Object.keys(e).length) return
-    const product = {
-      name: draft.name.trim(), genericName: draft.genericName.trim().toLowerCase(), category: draft.category.trim(),
-      unit: draft.unit || 'unit', packSize: Number(draft.packSize) || 1, cartonSize: Number(draft.cartonSize) || 1,
-      barcode: draft.barcode.trim(), rx: !!draft.rx, controlled: !!draft.controlled, image: draft.image || null,
-      price: Number(draft.price), costPrice: Number(draft.cost || 0),
-    }
-    const received = Number(draft.quantity) || 0
+    setSaving(true)
     try {
+      let imageUrl = draft.image || null
+      if (draft.imageBlob && sync.remote.configured) imageUrl = await sync.remote.uploadProductImage(draft.imageBlob)
+      else if (draft.imageBlob && import.meta.env.PROD) throw new Error('Connect to the hospital backend before saving a product image')
+      const product = {
+        name: draft.name.trim(), genericName: draft.genericName.trim().toLowerCase(), category: draft.category.trim(),
+        strength: draft.strength.trim(), dosageForm: draft.dosageForm,
+        unit: draft.unit || 'unit', packSize: Number(draft.packSize) || 1, cartonSize: Number(draft.cartonSize) || 1,
+        barcode: draft.barcode.trim(), rx: !!draft.rx, controlled: !!draft.controlled, image: imageUrl,
+        price: Number(draft.price), costPrice: Number(draft.cost || 0),
+      }
+      const received = Number(draft.quantity) || 0
       await repo.createProduct({
         product,
         batch: { batchNo: draft.batchNo.trim(), mfgDate: draft.mfgDate, expiry: draft.expiry || null, received, cost: draft.cost, price: draft.price, supplier: draft.supplier.trim() },
@@ -363,10 +375,13 @@ export default function InventoryPage() {
       if (location.state?.returnToPos) navigate(location.state.returnToPos, { replace: true })
     } catch (err) {
       toast.error(err.message || 'Could not save product')
+    } finally {
+      setSaving(false)
     }
   }
 
   function closeProductForm() {
+    if (saving) return
     setDraft(null)
     if (location.state?.returnToPos) navigate(location.state.returnToPos, { replace: true })
   }
@@ -397,10 +412,12 @@ export default function InventoryPage() {
 
       {draft && canManage && (
         <div className="mb-3">
-          <FormPanel title="New product" submitLabel="Save product" onClose={closeProductForm} onSubmit={save}>
+          <FormPanel title="New product" submitLabel={saving ? 'Saving product…' : 'Save product'} submitDisabled={saving} onClose={closeProductForm} onSubmit={save}>
             <FormGrid>
               <Field label="Product name" htmlFor="p-name" error={errors.name} required><Input id="p-name" value={draft.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Amoxicillin 500mg" /></Field>
               <Field label="Generic name" htmlFor="p-gen" hint="Used for substitutions and interaction checks"><Input id="p-gen" value={draft.genericName} onChange={(e) => set('genericName', e.target.value)} placeholder="e.g. amoxicillin" /></Field>
+              <Field label="Strength / weight" htmlFor="p-strength" hint="For example, 500 mg or 250 mg/5 mL"><Input id="p-strength" value={draft.strength} onChange={(e) => set('strength', e.target.value)} placeholder="500 mg" /></Field>
+              <Field label="Drug form" htmlFor="p-form"><Select id="p-form" value={draft.dosageForm} onChange={(e) => set('dosageForm', e.target.value)}><option value="solid">Solid</option><option value="liquid">Liquid / fluid</option></Select></Field>
               <Field label="Category" htmlFor="p-cat"><Input id="p-cat" value={draft.category} onChange={(e) => set('category', e.target.value)} /></Field>
               <Field label="Unit" htmlFor="p-unit"><Input id="p-unit" value={draft.unit} onChange={(e) => set('unit', e.target.value)} placeholder="tablet, bottle, sachet" /></Field>
               <Field label="Units per pack" htmlFor="p-pack"><Input id="p-pack" type="number" min="1" value={draft.packSize} onChange={(e) => set('packSize', e.target.value)} /></Field>
@@ -415,7 +432,7 @@ export default function InventoryPage() {
               <Field label="Cost price per unit" htmlFor="p-cost"><Input id="p-cost" type="number" min="0" value={draft.cost} onChange={(e) => set('cost', e.target.value)} /></Field>
               <Field label="Prescription only" span2><Switch checked={draft.rx} onChange={(on) => set('rx', on)} label={draft.rx ? 'Requires prescription' : 'Over the counter'} /></Field>
               <Field label="Controlled drug" span2 hint="A pharmacist PIN is asked for before this drug is dispensed."><Switch checked={draft.controlled} onChange={(on) => set('controlled', on)} label={draft.controlled ? 'Controlled' : 'Not controlled'} /></Field>
-              <Field label="Product image" span2 hint="Saved on this device.">
+              <Field label="Product image" span2 hint={sync.remote.configured ? 'Compressed and uploaded to Supabase when you save the product.' : 'Stored with this local demo product on this device.'}>
                 <div className="img-picker">
                   {draft.image ? <img className="img-thumb-lg" src={draft.image} alt="Product preview" /> : <span className="img-thumb-lg placeholder"><Icon name="image" size={26} /></span>}
                   <div className="img-picker-actions">
@@ -458,7 +475,7 @@ export default function InventoryPage() {
                   <span className="ic-name">{p.name}</span>
                   <Pill tone={meta.tone}>{meta.label}</Pill>
                 </span>
-                <span className="ic-gen">{p.genericName || p.category || 'No generic name'}{p.controlled ? ' · Controlled' : ''}</span>
+                <span className="ic-gen">{[p.genericName || p.category || 'No generic name', p.strength, p.dosageForm === 'liquid' ? 'Liquid / fluid' : p.dosageForm === 'solid' ? 'Solid' : '', p.controlled ? 'Controlled' : ''].filter(Boolean).join(' · ')}</span>
                 <span className="ic-qty">{number(s.sellable)} <small>{p.unit}s</small></span>
                 <span className="ic-meta">
                   <span>{s.liveBatches.length} batch{s.liveBatches.length === 1 ? '' : 'es'}</span>
@@ -475,7 +492,7 @@ export default function InventoryPage() {
             rowStatus={({ s }) => STATUS_META[s.status].border}
             onRowClick={({ product }) => setOpenId(product.id)}
             columns={[
-              { key: 'n', header: 'Drug', render: ({ product: p }) => (<div className="prod-cell">{p.image && <img className="prod-thumb" src={p.image} alt="" />}<div><div className="cell-strong">{p.name}</div><div className="cell-sub">{p.genericName || p.category || ''}</div></div></div>) },
+              { key: 'n', header: 'Drug', render: ({ product: p }) => (<div className="prod-cell">{p.image && <img className="prod-thumb" src={p.image} alt="" />}<div><div className="cell-strong">{p.name}</div><div className="cell-sub">{[p.genericName || p.category || '', p.strength, p.dosageForm === 'liquid' ? 'Liquid / fluid' : p.dosageForm === 'solid' ? 'Solid' : ''].filter(Boolean).join(' · ')}</div></div></div>) },
               { key: 'q', header: 'Stock', align: 'num', render: ({ s, product }) => `${number(s.sellable)} ${product.unit}s` },
               { key: 'b', header: 'Batches', align: 'num', render: ({ s }) => s.liveBatches.length },
               { key: 'e', header: 'Nearest expiry', render: ({ s }) => (s.nearest ? formatDate(s.nearest.expiry) : '-') },

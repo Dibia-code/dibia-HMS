@@ -79,4 +79,18 @@ export class RemoteApiClient {
     if (!response.ok) throw new Error(result.message || `Hospital snapshot failed (${response.status})`)
     return result
   }
+
+  async uploadProductImage(image) {
+    if (!this.configured) throw new Error('Sign in with the hospital backend before uploading an image')
+    const response = await this.request(`${this.baseUrl}/products/image`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: image,
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(result.message || `Image upload failed (${response.status})`)
+    if (!result.imageUrl) throw new Error('Image upload did not return a URL')
+    return result.imageUrl
+  }
 }

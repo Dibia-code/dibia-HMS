@@ -8,6 +8,7 @@ import { query, transaction, supabaseStatus, checkSupabaseDatabase, getProfile, 
 import { createSupabaseUser, deleteSupabaseUser, findSupabaseUserByEmail, updateSupabaseUserPassword, verifySupabaseAccessToken, signInSupabasePassword, refreshSupabaseSession, revokeSupabaseSession, sendSupabasePasswordReset, updateSupabasePassword, supabaseAuthReady } from './supabase-auth.js'
 import { applySupabaseSync, readSupabaseChanges, readSupabaseSnapshot } from './supabase-sync.js'
 import { hasPermission } from './policy.js'
+import { uploadProductImage } from './supabase-storage.js'
 
 const production = process.env.NODE_ENV === 'production'
 const PORT = Number(process.env.PORT || 4000)
@@ -155,6 +156,7 @@ async function verifyPlatform(req, res, next) {
 const auth = verifyHospital
 const platformAuth = verifyPlatform
 const requireRole = (...roles) => (req, res, next) => roles.some((role) => req.auth.roles?.includes(role)) ? next() : res.status(403).json({ message: 'You do not have permission for this action' })
+const requirePermission = (permission) => (req, res, next) => hasPermission({ permission, roles: req.auth.roles, grants: req.auth.permGrants, denies: req.auth.permDenies }) ? next() : res.status(403).json({ message: 'You do not have permission for this action' })
 
 async function platformAudit(actorId, action, entity, recordId, metadata = {}) {
   await query('insert into public.platform_audit_logs (id,actor_id,action,entity,record_id,metadata) values ($1,$2,$3,$4,$5,$6::jsonb)', [id('platform_audit'), actorId, action, entity, recordId, JSON.stringify(metadata)])
@@ -783,6 +785,11 @@ app.patch('/devices/:deviceId', auth, requireRole('facility_admin','ceo_owner','
 
 app.get('/sync/snapshot', auth, asyncRoute(async (req, res) => { let pageState = null; if (req.query.cursor) { try { const cursor = jwt.verify(String(req.query.cursor),JWT_SECRET,{ algorithms:['HS256'],audience:'sync-snapshot' }); if (cursor.tenantId !== req.auth.tenantId || !Number.isSafeInteger(cursor.highWater) || (cursor.after !== null && typeof cursor.after !== 'string')) throw new Error(); pageState = { after: cursor.after, highWater: cursor.highWater } } catch { return apiError(res,'Invalid or expired snapshot cursor. Restart the snapshot.',400) } } const result = await readSupabaseSnapshot({ tenantId:req.auth.tenantId,pageState,pageSize:200 }); const nextCursor = result.nextState ? jwt.sign({ ...result.nextState,tenantId:req.auth.tenantId,aud:'sync-snapshot' },JWT_SECRET,{ expiresIn:'1h' }) : null; res.json({ records:result.records,nextCursor,deltaCursor:result.deltaCursor }) }))
 app.post('/sync', auth, asyncRoute(async (req, res) => { const ops = Array.isArray(req.body?.ops) ? req.body.ops.slice(0,50) : []; try { res.json(await applySupabaseSync({ tenantId:req.auth.tenantId,actorId:req.auth.sub,ops,allowedEntities,timestamp:now })) } catch (error) { console.error('Supabase sync failed',{ requestId:req.requestId,...errorDiagnostics(error) }); apiError(res,'Sync failed') } }))
+app.post('/products/image', auth, requirePermission('inventory.manage'), express.raw({ type: 'image/jpeg', limit: '2mb' }), asyncRoute(async (req, res) => {
+  if (!Buffer.isBuffer(req.body) || req.body.length < 4 || req.body[0] !== 0xff || req.body[1] !== 0xd8 || req.body[2] !== 0xff) return apiError(res, 'Choose a valid JPEG image', 400)
+  const image = await uploadProductImage(req.auth.tenantId, req.body)
+  res.status(201).json(image)
+}))
 app.get('/sync', auth, asyncRoute(async (req, res) => { const cursor = Math.max(0,Number(req.query.cursor || 0)); res.json(await readSupabaseChanges({ tenantId:req.auth.tenantId,cursor })) }))
 app.get('/admin/summary', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => { const [tenant,staff,audit] = await Promise.all([getTenant(req.auth.tenantId),listStaff(req.auth.tenantId),query('select count(*)::int as count from public.audit_logs where hospital_id=$1',[req.auth.tenantId])]); if (!tenant) return apiError(res,'Hospital workspace not found',404); res.json({ tenant:{ id:tenant.id,slug:tenant.slug,name:tenant.name,logoUrl:tenant.logoUrl || null },staffCount:staff.length,auditCount:audit.rows[0].count }) }))
 

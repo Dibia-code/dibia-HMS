@@ -11,7 +11,10 @@ export default function PwaUpdatePrompt() {
     updateServiceWorker,
   } = useRegisterSW({
     immediate: true,
-    onRegisteredSW: (_url, currentRegistration) => setRegistration(currentRegistration),
+    onRegisteredSW: (_url, currentRegistration) => {
+      setRegistration(currentRegistration)
+      if (navigator.onLine) currentRegistration.update().catch(() => {})
+    },
   })
 
   useEffect(() => {
@@ -19,6 +22,7 @@ export default function PwaUpdatePrompt() {
     const check = () => {
       if (navigator.onLine && document.visibilityState === 'visible') registration.update().catch(() => {})
     }
+    check()
     const interval = window.setInterval(check, 60_000)
     window.addEventListener('focus', check)
     document.addEventListener('visibilitychange', check)
