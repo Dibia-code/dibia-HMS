@@ -99,10 +99,14 @@ function ExpiryChip({ expiry, windows }) {
 function DrugDetail({ product, summary, movements, suppliers, canManage, config, quickReceive = false, onClose }) {
   const { user } = useAuth()
   const repo = useRepo()
+  const sync = useSyncEngine()
   const toast = useToast()
   const [receive, setReceive] = useState(null)
   const [receiveReady, setReceiveReady] = useState(false)
   const [adjust, setAdjust] = useState(null)
+  const [edit, setEdit] = useState(null)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const imageInput = useRef(null)
   const [threshold, setThreshold] = useState(String(summary.threshold))
   const actor = { id: user.userId, name: user.name }
   const isDefault = product.thresholdOverride == null
@@ -129,6 +133,56 @@ function DrugDetail({ product, summary, movements, suppliers, canManage, config,
     const db = await getDB()
     const saved = await db.get('meta', receiveDraftKey)
     setReceive(saved?.value || { ...emptyBatch(), price: String(product.price || '') })
+  }
+
+  function openEdit() {
+    const strength = String(product.strength || '').trim().match(/^([\d.]+)\s*(.*)$/)
+    setEdit({
+      name: product.name || '', genericName: product.genericName || '', category: product.category || '',
+      unit: product.unit || 'unit', strengthValue: strength?.[1] || '', strengthUnit: strength?.[2] || 'mg',
+      dosageForm: product.dosageForm || 'solid', price: String(product.price ?? ''), cost: String(product.costPrice ?? ''),
+      rx: Boolean(product.rx), controlled: Boolean(product.controlled), image: product.image || '', imageBlob: null, error: '',
+    })
+  }
+
+  async function saveProductEdit() {
+    if (savingEdit || !edit) return
+    if (!edit.name.trim()) return setEdit({ ...edit, error: 'Enter a drug name' })
+    if (edit.price === '' || !Number.isFinite(Number(edit.price)) || Number(edit.price) < 0) return setEdit({ ...edit, error: 'Enter a valid selling price' })
+    setSavingEdit(true)
+    let pendingImageKey = null
+    try {
+      let imageUrl = edit.image || null
+      if (edit.imageBlob) {
+        if (sync.remote.configured && navigator.onLine) {
+          try {
+            imageUrl = await sync.remote.uploadProductImage(edit.imageBlob)
+          } catch {
+            pendingImageKey = `inventory.pendingImage.${user.hospitalId}.${product.id}`
+            await getDB().then((db) => db.put('meta', { key: pendingImageKey, value: { blob: edit.imageBlob, hospitalId: user.hospitalId, productId: product.id } }))
+          }
+        } else {
+          pendingImageKey = `inventory.pendingImage.${user.hospitalId}.${product.id}`
+          await getDB().then((db) => db.put('meta', { key: pendingImageKey, value: { blob: edit.imageBlob, hospitalId: user.hospitalId, productId: product.id } }))
+        }
+      } else if (!imageUrl) {
+        await getDB().then((db) => db.delete('meta', `inventory.pendingImage.${user.hospitalId}.${product.id}`))
+      }
+      await repo.update('products', product.id, {
+        name: edit.name.trim(), genericName: edit.genericName.trim().toLowerCase(), category: edit.category.trim(),
+        strength: [edit.strengthValue.trim(), edit.strengthUnit.trim()].filter(Boolean).join(' '), unit: edit.unit.trim() || 'unit',
+        dosageForm: edit.dosageForm, price: Number(edit.price), costPrice: Number(edit.cost || 0),
+        rx: edit.rx, controlled: edit.controlled, image: imageUrl,
+      })
+      await sync.notifyWrite()
+      setEdit(null)
+      toast.success(pendingImageKey ? 'Drug saved. Its photo will upload when the connection returns.' : 'Drug details saved')
+    } catch (error) {
+      if (pendingImageKey) getDB().then((db) => db.delete('meta', pendingImageKey)).catch(() => {})
+      toast.error(error.message || 'Could not save drug details')
+    } finally {
+      setSavingEdit(false)
+    }
   }
 
   async function saveThreshold(value) {
@@ -180,6 +234,7 @@ function DrugDetail({ product, summary, movements, suppliers, canManage, config,
         {product.rx && <Pill tone="info" dot={false}>Prescription</Pill>}
         <span className="text-muted">{[product.genericName || 'No generic name', product.strength, product.dosageForm === 'liquid' ? 'Liquid / fluid' : product.dosageForm === 'solid' ? 'Solid' : '', product.category].filter(Boolean).join(' · ')}</span>
       </div>
+      {canManage && <div className="row wrap mb-2"><Button size="sm" variant="ghost" onClick={openEdit}>Edit drug details and image</Button>{product.image && <img className="img-thumb-lg" src={product.image} alt={`${product.name} product`} />}</div>}
       <div className="stat-row cols-3 mb-2">
         <div className="stat-card"><div className="label">Available to dispense</div><div className="value">{number(summary.sellable)}</div><div className="delta">{product.unit}s</div></div>
         <div className="stat-card"><div className="label">Expired stock</div><div className="value">{number(summary.expiredQty)}</div></div>
@@ -282,6 +337,44 @@ function DrugDetail({ product, summary, movements, suppliers, canManage, config,
             </Field>
             <Field label="New balance" htmlFor="ad-b" hint={`Currently ${adjust.batch.balance}`}><Input id="ad-b" type="number" min="0" value={adjust.balance} onChange={(e) => setAdjust({ ...adjust, balance: e.target.value })} /></Field>
             <Field label="Reason" htmlFor="ad-r" required error={adjust.error}><Input id="ad-r" value={adjust.reason} onChange={(e) => setAdjust({ ...adjust, reason: e.target.value, error: '' })} /></Field>
+          </div>
+        </Modal>
+      )}
+      {edit && (
+        <Modal
+          title={`Edit drug: ${product.name}`}
+          onClose={() => { if (!savingEdit) setEdit(null) }}
+          actions={<><Button variant="ghost" disabled={savingEdit} onClick={() => setEdit(null)}>Cancel</Button><Button variant="primary" disabled={savingEdit} onClick={saveProductEdit}>{savingEdit ? 'Saving…' : 'Save changes'}</Button></>}
+        >
+          {edit.error && <p className="text-critical" role="alert">{edit.error}</p>}
+          <div className="form-grid">
+            <Field label="Drug name" htmlFor="edit-drug-name"><Input id="edit-drug-name" value={edit.name} onChange={(event) => setEdit({ ...edit, name: event.target.value, error: '' })} /></Field>
+            <Field label="Generic name" htmlFor="edit-drug-generic"><Input id="edit-drug-generic" value={edit.genericName} onChange={(event) => setEdit({ ...edit, genericName: event.target.value })} /></Field>
+            <Field label="Category" htmlFor="edit-drug-category"><Input id="edit-drug-category" list="edit-drug-categories" value={edit.category} onChange={(event) => setEdit({ ...edit, category: event.target.value })} /><datalist id="edit-drug-categories">{['Pain relief', 'Antibiotic', 'Antimalarial', 'Allergy', 'Vitamins and supplements'].map((category) => <option key={category} value={category} />)}</datalist></Field>
+            <Field label="Strength amount" htmlFor="edit-drug-strength"><Input id="edit-drug-strength" type="number" min="0" step="any" value={edit.strengthValue} onChange={(event) => setEdit({ ...edit, strengthValue: event.target.value })} /></Field>
+            <Field label="Strength unit" htmlFor="edit-drug-strength-unit"><Input id="edit-drug-strength-unit" list="edit-strength-units" value={edit.strengthUnit} onChange={(event) => setEdit({ ...edit, strengthUnit: event.target.value })} /><datalist id="edit-strength-units">{['mg', 'mcg', 'g', 'mL', 'mg/5 mL', 'mg/mL', 'IU', '%'].map((unit) => <option key={unit} value={unit} />)}</datalist></Field>
+            <Field label="Dispensing unit" htmlFor="edit-drug-unit"><Input id="edit-drug-unit" list="edit-dispensing-units" value={edit.unit} onChange={(event) => setEdit({ ...edit, unit: event.target.value })} /><datalist id="edit-dispensing-units">{['tablet', 'capsule', 'bottle', 'vial', 'ampoule', 'sachet', 'tube', 'strip', 'inhaler', 'pack'].map((unit) => <option key={unit} value={unit} />)}</datalist></Field>
+            <Field label="Drug form" htmlFor="edit-drug-form"><Select id="edit-drug-form" value={edit.dosageForm} onChange={(event) => setEdit({ ...edit, dosageForm: event.target.value })}><option value="solid">Solid</option><option value="liquid">Liquid / fluid</option></Select></Field>
+            <Field label="Cost price per unit (naira)" htmlFor="edit-drug-cost"><Input id="edit-drug-cost" type="number" min="0" value={edit.cost} onChange={(event) => setEdit({ ...edit, cost: event.target.value })} /></Field>
+            <Field label="Selling price per unit (naira)" htmlFor="edit-drug-price"><Input id="edit-drug-price" type="number" min="0" value={edit.price} onChange={(event) => setEdit({ ...edit, price: event.target.value, error: '' })} /></Field>
+            <Field label="Product image" span2>
+              <div className="img-picker">
+                {edit.image ? <img className="img-thumb-lg" src={edit.image} alt="Drug image preview" /> : <span className="img-thumb-lg placeholder"><Icon name="image" size={26} /></span>}
+                <div className="img-picker-actions">
+                  <Button variant="ghost" size="sm" icon="image" onClick={() => imageInput.current?.click()}>{edit.image ? 'Change image' : 'Add image'}</Button>
+                  {edit.image && <Button variant="quiet" size="sm" onClick={() => setEdit({ ...edit, image: '', imageBlob: null })}>Remove image</Button>}
+                  <input ref={imageInput} type="file" accept="image/*" hidden onChange={async (event) => {
+                    const file = event.target.files?.[0]
+                    event.target.value = ''
+                    if (!file) return
+                    try {
+                      const image = await prepareProductImage(file)
+                      setEdit((current) => ({ ...current, image: image.preview, imageBlob: image.blob }))
+                    } catch (error) { toast.error(error.message || 'Could not use that image') }
+                  }} />
+                </div>
+              </div>
+            </Field>
           </div>
         </Modal>
       )}

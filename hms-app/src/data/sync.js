@@ -126,6 +126,7 @@ export class SyncEngine {
     try {
       const db = await getDB()
       const tenantId = this.remote.hospitalId
+      const pendingImageIds = new Set((await db.getAll('meta')).filter((entry) => entry.key.startsWith(`inventory.pendingImage.${tenantId}.`)).map((entry) => entry.value?.productId).filter(Boolean))
       if (tenantId && typeof this.remote.snapshot === 'function') {
         const snapshotKey = `dibia.snapshot.${tenantId}`
         let pageCursor = localStorage.getItem(snapshotKey)
@@ -146,11 +147,12 @@ export class SyncEngine {
             }
             const pendingOps = await db.getAll('outbox')
             const pendingRecords = new Set(pendingOps.map((op) => `${op.entity}:${op.recordId}`))
-            const pageEntities = [...new Set((page.records || []).map((row) => row.entity).filter((entity) => STORES[entity]))]
+            const incomingRecords = await Promise.all((page.records || []).map(async (row) => ({ ...row, payload: await this.preservePendingImage(db, pendingImageIds, row.entity, row.recordId, row.payload) })))
+            const pageEntities = [...new Set(incomingRecords.map((row) => row.entity).filter((entity) => STORES[entity]))]
             const changed = new Set()
             if (pageEntities.length) {
               const transaction = db.transaction(pageEntities, 'readwrite')
-              for (const row of page.records || []) {
+              for (const row of incomingRecords) {
                 if (!STORES[row.entity] || !row.payload?.id || pendingRecords.has(`${row.entity}:${row.recordId}`)) continue
                 await transaction.objectStore(row.entity).put(row.payload)
                 changed.add(row.entity)
@@ -224,9 +226,10 @@ export class SyncEngine {
           if (names.length) {
             const pendingOps = await db.getAll('outbox')
             const pendingRecords = new Set(pendingOps.map((op) => `${op.entity}:${op.recordId}`))
+            const incomingChanges = await Promise.all(delta.changes.map(async (change) => ({ ...change, payload: await this.preservePendingImage(db, pendingImageIds, change.entity, change.recordId, change.payload) })))
             const transaction = db.transaction(names, 'readwrite')
             const changed = new Set()
-            for (const change of delta.changes) {
+            for (const change of incomingChanges) {
               if (!STORES[change.entity] || pendingRecords.has(`${change.entity}:${change.recordId}`)) continue
               const store = transaction.objectStore(change.entity)
               if (change.op === 'delete') await store.delete(change.recordId)
@@ -256,6 +259,13 @@ export class SyncEngine {
     if (typeof safePayload.image === 'string' && safePayload.image.startsWith('data:')) safePayload.image = null
     delete safePayload.imageBlob
     return safePayload
+  }
+
+  async preservePendingImage(db, pendingImageIds, entity, recordId, payload) {
+    if (entity !== 'products' || !payload?.id || !pendingImageIds.has(recordId)) return payload
+    const local = await db.get('products', recordId)
+    if (typeof local?.image === 'string' && local.image.startsWith('data:')) return { ...payload, image: local.image }
+    return payload
   }
 
   async syncPendingProductImages(db, tenantId) {
