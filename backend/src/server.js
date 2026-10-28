@@ -644,7 +644,20 @@ app.get('/feedback/recipients', auth, asyncRoute(async (req, res) => {
   res.json({ hospitals:result.rows })
 }))
 app.get('/feedback/messages', auth, asyncRoute(async (req, res) => {
-  const result = await query('select m.id,m.sender_hospital_id as "senderHospitalId",s.name as "senderHospital",m.recipient_hospital_id as "recipientHospitalId",r.name as "recipientHospital",m.sent_by as "sentBy",m.body,m.created_at as "sentAt" from public.feedback_messages m join public.tenants s on s.id=m.sender_hospital_id join public.tenants r on r.id=m.recipient_hospital_id where m.sender_hospital_id=$1 or m.recipient_hospital_id=$1 order by m.created_at desc limit 200', [req.auth.tenantId])
+  const result = await query(`
+    select m.id,m.sender_hospital_id as "senderHospitalId",s.name as "senderHospital",m.recipient_hospital_id as "recipientHospitalId",r.name as "recipientHospital",m.sent_by as "sentBy",m.body,m.created_at as "sentAt"
+    from public.feedback_messages m
+    join public.tenants s on s.id=m.sender_hospital_id
+    join public.tenants r on r.id=m.recipient_hospital_id
+    where m.sender_hospital_id=$1 or m.recipient_hospital_id=$1
+    union all
+    select m.id,null::text as "senderHospitalId",'Dibia Console'::text as "senderHospital",m.hospital_id as "recipientHospitalId",t.name as "recipientHospital",m.sent_by as "sentBy",m.body,m.created_at as "sentAt"
+    from public.platform_messages m
+    join public.tenants t on t.id=m.hospital_id
+    where m.hospital_id=$1
+    order by "sentAt" desc
+    limit 500
+  `, [req.auth.tenantId])
   res.json({ messages:result.rows })
 }))
 app.post('/feedback/messages', auth, asyncRoute(async (req, res) => {

@@ -31,13 +31,13 @@ function fromBackend(result) {
 }
 
 async function loadBackendModules(remote) {
-  if (!remote?.configured) return []
+  if (!remote?.configured) return null
   try {
     const response = await remote.request(`${apiBase()}/tenant/modules`, { credentials: 'include', headers: {} })
     const result = await response.json().catch(() => ({}))
-    if (!response.ok) return []
+    if (!response.ok) return null
     return (result.modules || []).filter((module) => module.entitlementStatus === 'entitled' && module.activationStatus === 'enabled').map((module) => module.code)
-  } catch { return [] }
+  } catch { return null }
 }
 
 function loadSession() {
@@ -98,7 +98,8 @@ export function AuthProvider({ children }) {
           if (cached?.userId === next.userId && cached.passwordChangeSkipped) next.passwordChangeSkipped = true
           if (!next.userId || !next.hospitalId || !next.hospitalSlug) throw new Error('The server returned an incomplete hospital session')
           sync.remote?.setAccessToken?.(result.accessToken, next.hospitalId, next.backendBranchId)
-          next.moduleCodes = await loadBackendModules(sync.remote)
+          const moduleCodes = await loadBackendModules(sync.remote)
+          next.moduleCodes = moduleCodes ?? (cached?.userId === next.userId ? cached.moduleCodes || [] : [])
           localStorage.setItem(SESSION_KEY, JSON.stringify(next))
           setSession(next)
           setScope({ hospitalId: next.hospitalId, branchId: next.branchId })
@@ -158,7 +159,9 @@ export function AuthProvider({ children }) {
         const next = fromBackend(result)
         if (!next.userId || !next.hospitalId || !next.hospitalSlug) throw new Error('The server returned an incomplete hospital session')
         sync.remote?.setAccessToken?.(result.accessToken, next.hospitalId, next.backendBranchId)
-        next.moduleCodes = await loadBackendModules(sync.remote)
+        const moduleCodes = await loadBackendModules(sync.remote)
+        const cached = loadSession()
+        next.moduleCodes = moduleCodes ?? (cached?.userId === next.userId ? cached.moduleCodes || [] : [])
         localStorage.setItem(SESSION_KEY, JSON.stringify(next))
         setSession(next)
         setScope({ hospitalId: next.hospitalId, branchId: next.branchId })

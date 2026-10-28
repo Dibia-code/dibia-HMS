@@ -216,6 +216,8 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
   const [hospitals, setHospitals] = useState([])
   const [messageRecipient, setMessageRecipient] = useState('')
   const [messageDraft, setMessageDraft] = useState('')
+  const incomingMessages = messages.filter((message) => message.recipientHospitalId === user?.hospitalId)
+  const outgoingMessages = messages.filter((message) => message.senderHospitalId === user?.hospitalId)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [retestText, setRetestText] = useState('')
   const [keyboardOpen, setKeyboardOpen] = useState(false)
@@ -273,8 +275,15 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
   useEffect(() => {
     if (!panelOpen || !api?.messages) return undefined
     let active = true
-    api.messages().then((items) => { if (active) setMessages(items || []) }).catch(() => { if (active) setSyncError('Hospital messages could not be loaded. Check your connection and try again.') })
-    return () => { active = false }
+    const loadMessages = () => api.messages().then((items) => { if (active) setMessages(items || []) }).catch(() => { if (active) setSyncError('Hospital messages could not be loaded. Check your connection and try again.') })
+    loadMessages()
+    const timer = window.setInterval(loadMessages, 20_000)
+    window.addEventListener('focus', loadMessages)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      window.removeEventListener('focus', loadMessages)
+    }
   }, [panelOpen, api])
 
   useEffect(() => {
@@ -611,7 +620,7 @@ export default function FeedbackNotebook({ app, user, workspace, role, scopeKey,
               {openNote.sent ? <span className="feedback-shared-tag">Sent to Dibia · {formatDate(openNote.sentAt || openNote.createdAt)}</span> : <button type="button" className="feedback-send-link" disabled={!api?.send || busy} onClick={() => sendNote(openNote)}>Send to the Dibia team</button>}
             </div>}
             {tab === 'notes' && <div className="feedback-list">
-              {app === 'HMS' && <section className="feedback-hospital-inbox"><div className="feedback-detail-title"><strong>Hospital messages</strong><button type="button" className="feedback-send-link" onClick={refreshMessages}>Refresh inbox</button></div>{messages.length ? messages.map((message) => <article key={message.id}><time>{message.senderHospital || 'Dibia Console'} → {message.recipientHospital || workspace} · {formatDate(message.sentAt)}</time><p>{message.body}</p></article>) : <div className="feedback-empty">No messages have arrived for this hospital yet.</div>}</section>}
+              {app === 'HMS' && <section className="feedback-hospital-inbox"><div className="feedback-detail-title"><strong>Messages · {incomingMessages.length} received</strong><button type="button" className="feedback-send-link" onClick={refreshMessages}>Refresh inbox</button></div><strong>Received</strong>{incomingMessages.length ? incomingMessages.map((message) => <article key={message.id}><time>{message.senderHospital || 'Dibia Console'} · {formatDate(message.sentAt)}</time><p>{message.body}</p></article>) : <div className="feedback-empty">No messages have arrived for this hospital yet.</div>}<strong>Sent</strong>{outgoingMessages.length ? outgoingMessages.map((message) => <article key={message.id}><time>To {message.recipientHospital || 'Dibia Console'} · {formatDate(message.sentAt)}</time><p>{message.body}</p></article>) : <div className="feedback-empty">No messages sent from this hospital yet.</div>}</section>}
               {unseenUpdates.length > 0 && <section className="feedback-unseen"><strong>Updates since your last review</strong>{unseenUpdates.map(({ note, update }) => <button type="button" key={update.id} onClick={() => { setOpenNote(note); setTab('write'); const next = { ...reviewedUpdates, [note.id]: new Date().toISOString() }; setReviewedUpdates(next); try { localStorage.setItem(reviewKey, JSON.stringify(next)) } catch { setStorageError('Could not save that you reviewed this update.') } }}><b>{note.id} · {update.status || update.kind}</b><span>{update.text}</span></button>)}</section>}
               <div className="feedback-list-tools"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search feedback" aria-label="Search feedback" /><select value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="Filter feedback">{['Outstanding', 'All', ...statuses].map((value) => <option key={value}>{value}</option>)}</select></div>
               <label className="feedback-history-toggle"><input type="checkbox" checked={includeHistory} onChange={(event) => setIncludeHistory(event.target.checked)} /> Include full history in exports</label>

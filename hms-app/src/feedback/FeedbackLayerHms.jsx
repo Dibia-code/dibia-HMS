@@ -43,27 +43,10 @@ export default function FeedbackLayerHms() {
       return (body.feedback || []).map((item) => ({ ...item, sent: true }))
     },
     messages: async () => {
-      const results = await Promise.allSettled([
-        sync.remote.request(`${sync.remote.baseUrl}/messages`, { credentials: 'include', headers: {} }),
-        sync.remote.request(`${sync.remote.baseUrl}/feedback/messages`, { credentials: 'include', headers: {} }),
-      ])
-      const messages = []
-      const errors = []
-      for (const [index, result] of results.entries()) {
-        if (result.status !== 'fulfilled') {
-          errors.push(result.reason)
-          continue
-        }
-        const body = await result.value.json().catch(() => ({}))
-        if (!result.value.ok) {
-          errors.push(new Error(body.message || 'Unable to load messages'))
-          continue
-        }
-        if (index === 0) messages.push(...(body.messages || []).map((item) => ({ ...item, senderHospital: 'Dibia Console', recipientHospital: user?.hospitalName })))
-        else messages.push(...(body.messages || []))
-      }
-      if (!messages.length && errors.length === results.length) throw errors[0]
-      return messages
+      const response = await sync.remote.request(`${sync.remote.baseUrl}/feedback/messages`, { credentials: 'include', headers: {} })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.message || 'Unable to load messages')
+      return body.messages || []
     },
     recipients: async () => {
       const response = await sync.remote.request(`${sync.remote.baseUrl}/feedback/recipients`, { credentials: 'include', headers: {} })

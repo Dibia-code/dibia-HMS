@@ -122,6 +122,7 @@ export default function PurchasingPage() {
 
   const supplierCols = [
     { key: 'name', header: 'Supplier', render: (r) => <span className="cell-strong">{r.name}</span> },
+    { key: 'contactName', header: 'Contact person', render: (r) => r.contactName || '—' },
     { key: 'phone', header: 'Phone', render: (r) => r.phone || '—' },
     { key: 'email', header: 'Email', render: (r) => r.email || '—' },
     { key: 'creditTerms', header: 'Credit terms', render: (r) => r.creditTerms || '—' },

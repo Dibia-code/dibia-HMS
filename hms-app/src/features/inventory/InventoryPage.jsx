@@ -11,6 +11,8 @@ import {
 } from '@/components'
 import { naira, formatDate, formatDateTime, number } from '@/lib/format'
 import { summarise, STATUS_META, daysLeft, isExpired, expiryWindowLabel, unitsFrom } from '@/lib/stock'
+import { getDB } from '@/data/db'
+import { uuid } from '@/lib/id'
 
 function prepareProductImage(file, max = 512) {
   return new Promise((resolve, reject) => {
@@ -52,10 +54,35 @@ const MOVE_LABEL = {
 
 const emptyDraft = () => ({
   name: '', genericName: '', category: '', unit: 'tablet', packSize: '10', cartonSize: '10', barcode: '',
-  strength: '', dosageForm: 'solid', rx: false, controlled: false, image: '', imageBlob: null, price: '', batchNo: '', mfgDate: '', expiry: '', quantity: '', cost: '', supplier: '',
+  strengthValue: '', strengthUnit: 'mg', dosageForm: 'solid', rx: false, controlled: false, image: '', imageBlob: null, price: '', batchNo: '', mfgDate: '', expiry: '', quantity: '', cost: '', supplier: '',
 })
 
 const emptyBatch = () => ({ batchNo: '', mfgDate: '', expiry: '', quantity: '', unit: 'unit', cost: '', price: '', supplier: '' })
+
+function parseCsv(text) {
+  const rows = []
+  let row = []
+  let cell = ''
+  let quoted = false
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (quoted && char === '"' && text[index + 1] === '"') { cell += '"'; index += 1 }
+    else if (char === '"') quoted = !quoted
+    else if (char === ',' && !quoted) { row.push(cell.trim()); cell = '' }
+    else if ((char === '\n' || char === '\r') && !quoted) {
+      if (char === '\r' && text[index + 1] === '\n') index += 1
+      row.push(cell.trim())
+      if (row.some(Boolean)) rows.push(row)
+      row = []
+      cell = ''
+    } else cell += char
+  }
+  row.push(cell.trim())
+  if (row.some(Boolean)) rows.push(row)
+  if (rows.length < 2) return []
+  const headers = rows.shift().map((value) => value.replace(/^\uFEFF/, '').toLowerCase().replace(/[^a-z]/g, ''))
+  return rows.map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index] || ''])))
+}
 
 function ExpiryChip({ expiry, windows }) {
   if (!expiry) return <span className="text-muted">No expiry</span>
@@ -74,14 +101,35 @@ function DrugDetail({ product, summary, movements, suppliers, canManage, config,
   const repo = useRepo()
   const toast = useToast()
   const [receive, setReceive] = useState(null)
+  const [receiveReady, setReceiveReady] = useState(false)
   const [adjust, setAdjust] = useState(null)
   const [threshold, setThreshold] = useState(String(summary.threshold))
   const actor = { id: user.userId, name: user.name }
   const isDefault = product.thresholdOverride == null
 
+  const receiveDraftKey = `inventory.receiveDraft.${user.hospitalId}.${product.id}`
+
   useEffect(() => {
-    if (quickReceive && canManage) setReceive({ ...emptyBatch(), price: String(product.price || '') })
-  }, [quickReceive, canManage, product.id, product.price])
+    let active = true
+    setReceiveReady(false)
+    getDB().then((db) => db.get('meta', receiveDraftKey)).then((saved) => {
+      if (!active) return
+      setReceive(saved?.value || (quickReceive && canManage ? { ...emptyBatch(), price: String(product.price || '') } : null))
+      setReceiveReady(true)
+    }).catch(() => { if (active) setReceiveReady(true) })
+    return () => { active = false }
+  }, [receiveDraftKey, quickReceive, canManage, product.price])
+
+  useEffect(() => {
+    if (!receiveReady || !receive) return
+    getDB().then((db) => db.put('meta', { key: receiveDraftKey, value: receive })).catch(() => toast.error('The stock form could not be saved on this device'))
+  }, [receive, receiveReady, receiveDraftKey, toast])
+
+  async function openReceive() {
+    const db = await getDB()
+    const saved = await db.get('meta', receiveDraftKey)
+    setReceive(saved?.value || { ...emptyBatch(), price: String(product.price || '') })
+  }
 
   async function saveThreshold(value) {
     try {
@@ -103,6 +151,7 @@ function DrugDetail({ product, summary, movements, suppliers, canManage, config,
         actor,
       })
       toast.success('Stock received')
+      await getDB().then((db) => db.delete('meta', receiveDraftKey))
       setReceive(null)
     } catch (err) {
       toast.error(err.message)
@@ -149,7 +198,7 @@ function DrugDetail({ product, summary, movements, suppliers, canManage, config,
 
       <div className="row-between">
         <div className="section-label" style={{ margin: 0 }}>Batches</div>
-        {canManage && <Button size="sm" variant="primary" icon="plus" onClick={() => setReceive({ ...emptyBatch(), price: String(product.price || '') })}>Receive stock</Button>}
+        {canManage && <Button size="sm" variant="primary" icon="plus" onClick={openReceive}>Receive stock</Button>}
       </div>
       <div className="table-wrap mt-1">
         <DataTable
@@ -262,13 +311,33 @@ export default function InventoryPage() {
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const fileRef = useRef(null)
+  const importRef = useRef(null)
+  const draftKey = `inventory.productDraft.${user.hospitalId}.${user.branchId || 'all'}`
 
   useEffect(() => {
-    if (!location.state?.openNewProduct || !canManage) return
-    setErrors({})
-    setDraft(emptyDraft())
-    navigate(`${location.pathname}${location.search}`, { replace: true, state: { returnToPos: location.state.returnToPos } })
-  }, [canManage, location.pathname, location.search, location.state, navigate])
+    let active = true
+    getDB().then((db) => db.get('meta', draftKey)).then((saved) => {
+      if (!active) return
+      if (saved?.value && canManage) {
+        setDraft(saved.value)
+        toast.info('Your unfinished product form has been restored')
+      } else if (location.state?.openNewProduct && canManage) {
+        setDraft(emptyDraft())
+      }
+      if (location.state?.openNewProduct) navigate(`${location.pathname}${location.search}`, { replace: true, state: { returnToPos: location.state.returnToPos } })
+    }).catch(() => {
+      if (active && location.state?.openNewProduct && canManage) setDraft(emptyDraft())
+    })
+    return () => { active = false }
+  }, [canManage, draftKey, location.pathname, location.search, location.state, navigate, toast])
+
+  useEffect(() => {
+    if (!draft) return undefined
+    const timer = window.setTimeout(() => {
+      getDB().then((db) => db.put('meta', { key: draftKey, value: draft })).catch(() => toast.error('The unfinished product form could not be saved on this device'))
+    }, 150)
+    return () => window.clearTimeout(timer)
+  }, [draft, draftKey, toast])
 
   const { data: products } = useLiveQuery(() => repo.list('products'), [repo])
   const { data: batches } = useLiveQuery(() => repo.list('batches'), [repo])
@@ -282,11 +351,52 @@ export default function InventoryPage() {
       actions: canManage && !draft && (
         <div className="row wrap">
           <Button variant="ghost" icon="plus" onClick={() => { setReceiveProductId(''); setReceiveChooserOpen(true) }}>Receive stock</Button>
+          <Button variant="ghost" onClick={() => importRef.current?.click()}>Import spreadsheet</Button>
+          <Button variant="quiet" onClick={() => {
+            const file = new Blob(['name,category,strength,strengthUnit,form,unit,quantity,costPrice,sellingPrice,supplier,batchNumber,expiryDate\n'], { type: 'text/csv' })
+            const url = URL.createObjectURL(file)
+            const link = document.createElement('a')
+            link.href = url
+            link.download = 'pharmacy-products-template.csv'
+            link.click()
+            URL.revokeObjectURL(url)
+          }}>Download sheet template</Button>
           <Button variant="primary" icon="plus" onClick={() => { setErrors({}); setDraft(emptyDraft()) }}>Add product</Button>
+          <input ref={importRef} type="file" accept=".csv,text/csv" hidden onChange={async (event) => {
+            const file = event.target.files?.[0]
+            event.target.value = ''
+            if (!file) return
+            try {
+              const records = parseCsv(await file.text())
+              if (!records.length) throw new Error('The spreadsheet has no product rows')
+              if (records.length > 500) throw new Error('Import up to 500 products at a time')
+              let imported = 0
+              const failed = []
+              for (const [index, item] of records.entries()) {
+                const name = item.name?.trim()
+                const price = Number(item.sellingprice)
+                const quantity = Number(item.quantity || 0)
+                if (!name || !Number.isFinite(price) || price < 0 || !Number.isFinite(quantity) || quantity < 0) {
+                  failed.push(index + 2)
+                  continue
+                }
+                try {
+                  const strength = [item.strength?.trim(), item.strengthunit?.trim()].filter(Boolean).join(' ')
+                  await repo.createProduct({
+                    product: { name, genericName: item.genericname?.trim().toLowerCase() || '', category: item.category?.trim() || '', strength, dosageForm: item.form?.toLowerCase() === 'liquid' ? 'liquid' : 'solid', unit: item.unit?.trim() || 'unit', packSize: 1, cartonSize: 1, barcode: '', rx: false, controlled: false, image: null, price, costPrice: Number(item.costprice || 0) || 0 },
+                    batch: { batchNo: item.batchnumber?.trim() || '', mfgDate: '', expiry: item.expirydate || null, received: quantity, cost: Number(item.costprice || 0) || 0, price, supplier: item.supplier?.trim() || '' },
+                    actor: { id: user.userId, name: user.name },
+                  })
+                  imported += 1
+                } catch { failed.push(index + 2) }
+              }
+              toast.info(`${imported} products saved on this device${failed.length ? `; check spreadsheet rows ${failed.join(', ')}` : ''}. They will sync when connected.`)
+            } catch (error) { toast.error(error.message || 'Could not import that spreadsheet') }
+          }} />
         </div>
       ),
     },
-    [canManage, !!draft],
+    [canManage, !!draft, repo, toast, user.userId, user.name],
   )
 
   const items = useMemo(
@@ -353,13 +463,25 @@ export default function InventoryPage() {
     setErrors(e)
     if (Object.keys(e).length) return
     setSaving(true)
+    let pendingImageKey = null
     try {
       let imageUrl = draft.image || null
-      if (draft.imageBlob && sync.remote.configured) imageUrl = await sync.remote.uploadProductImage(draft.imageBlob)
-      else if (draft.imageBlob && import.meta.env.PROD) throw new Error('Product photos are unavailable right now. Try again later.')
+      const productId = uuid()
+      if (draft.imageBlob && sync.remote.configured && navigator.onLine) {
+        try {
+          imageUrl = await sync.remote.uploadProductImage(draft.imageBlob)
+        } catch {
+          pendingImageKey = `inventory.pendingImage.${user.hospitalId}.${productId}`
+          await getDB().then((db) => db.put('meta', { key: pendingImageKey, value: { blob: draft.imageBlob, hospitalId: user.hospitalId, productId } }))
+        }
+      } else if (draft.imageBlob) {
+        pendingImageKey = `inventory.pendingImage.${user.hospitalId}.${productId}`
+        await getDB().then((db) => db.put('meta', { key: pendingImageKey, value: { blob: draft.imageBlob, hospitalId: user.hospitalId, productId } }))
+      }
       const product = {
+        id: productId,
         name: draft.name.trim(), genericName: draft.genericName.trim().toLowerCase(), category: draft.category.trim(),
-        strength: draft.strength.trim(), dosageForm: draft.dosageForm,
+        strength: [draft.strengthValue.trim(), draft.strengthUnit].filter(Boolean).join(' '), dosageForm: draft.dosageForm,
         unit: draft.unit || 'unit', packSize: Number(draft.packSize) || 1, cartonSize: Number(draft.cartonSize) || 1,
         barcode: draft.barcode.trim(), rx: !!draft.rx, controlled: !!draft.controlled, image: imageUrl,
         price: Number(draft.price), costPrice: Number(draft.cost || 0),
@@ -370,10 +492,13 @@ export default function InventoryPage() {
         batch: { batchNo: draft.batchNo.trim(), mfgDate: draft.mfgDate, expiry: draft.expiry || null, received, cost: draft.cost, price: draft.price, supplier: draft.supplier.trim() },
         actor: { id: user.userId, name: user.name },
       })
+      await getDB().then((db) => db.delete('meta', draftKey))
       toast.success('Product added')
+      if (pendingImageKey) toast.info('The product is saved on this device. Its photo will upload when the connection returns.')
       setDraft(null)
       if (location.state?.returnToPos) navigate(location.state.returnToPos, { replace: true })
     } catch (err) {
+      if (pendingImageKey) getDB().then((db) => db.delete('meta', pendingImageKey)).catch(() => {})
       toast.error(err.message || 'Could not save product')
     } finally {
       setSaving(false)
@@ -382,6 +507,7 @@ export default function InventoryPage() {
 
   function closeProductForm() {
     if (saving) return
+    getDB().then((db) => db.delete('meta', draftKey)).catch(() => {})
     setDraft(null)
     if (location.state?.returnToPos) navigate(location.state.returnToPos, { replace: true })
   }
@@ -416,20 +542,21 @@ export default function InventoryPage() {
             <FormGrid>
               <Field label="Product name" htmlFor="p-name" error={errors.name} required><Input id="p-name" value={draft.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Amoxicillin 500mg" /></Field>
               <Field label="Generic name" htmlFor="p-gen" hint="Used for substitutions and interaction checks"><Input id="p-gen" value={draft.genericName} onChange={(e) => set('genericName', e.target.value)} placeholder="e.g. amoxicillin" /></Field>
-              <Field label="Strength / weight" htmlFor="p-strength" hint="For example, 500 mg or 250 mg/5 mL"><Input id="p-strength" value={draft.strength} onChange={(e) => set('strength', e.target.value)} placeholder="500 mg" /></Field>
+              <Field label="Strength amount" htmlFor="p-strength" hint="The amount of medicine in each dose"><Input id="p-strength" type="number" min="0" step="any" value={draft.strengthValue} onChange={(e) => set('strengthValue', e.target.value)} placeholder="500" /></Field>
+              <Field label="Strength unit" htmlFor="p-strength-unit"><Input id="p-strength-unit" list="strength-units" value={draft.strengthUnit} onChange={(e) => set('strengthUnit', e.target.value)} placeholder="mg, mL" /><datalist id="strength-units">{['mg', 'mcg', 'g', 'mL', 'mg/5 mL', 'mg/mL', 'IU', '%'].map((unit) => <option key={unit} value={unit} />)}</datalist></Field>
               <Field label="Drug form" htmlFor="p-form"><Select id="p-form" value={draft.dosageForm} onChange={(e) => set('dosageForm', e.target.value)}><option value="solid">Solid</option><option value="liquid">Liquid / fluid</option></Select></Field>
-              <Field label="Category" htmlFor="p-cat"><Input id="p-cat" value={draft.category} onChange={(e) => set('category', e.target.value)} /></Field>
-              <Field label="Unit" htmlFor="p-unit"><Input id="p-unit" value={draft.unit} onChange={(e) => set('unit', e.target.value)} placeholder="tablet, bottle, sachet" /></Field>
+              <Field label="Category" htmlFor="p-cat"><Input id="p-cat" list="drug-categories" value={draft.category} onChange={(e) => set('category', e.target.value)} placeholder="Choose or type a category" /><datalist id="drug-categories">{[...new Set(['Pain relief', 'Antibiotic', 'Antimalarial', 'Allergy', 'Vitamins and supplements', 'Stomach and digestion', 'Blood pressure', 'Diabetes', 'First aid', 'Other', ...(products || []).map((product) => product.category).filter(Boolean)])].map((category) => <option key={category} value={category} />)}</datalist></Field>
+              <Field label="Dispensing unit" htmlFor="p-unit" hint="What staff count or give: tablets, capsules, bottles, etc."><Input id="p-unit" list="dispensing-units" value={draft.unit} onChange={(e) => set('unit', e.target.value)} placeholder="tablet, bottle, sachet" /><datalist id="dispensing-units">{[...new Set(['tablet', 'capsule', 'bottle', 'vial', 'ampoule', 'sachet', 'tube', 'strip', 'inhaler', 'suppository', 'dropper', 'pack', ...(products || []).map((product) => product.unit).filter(Boolean)])].map((unit) => <option key={unit} value={unit} />)}</datalist></Field>
               <Field label="Units per pack" htmlFor="p-pack"><Input id="p-pack" type="number" min="1" value={draft.packSize} onChange={(e) => set('packSize', e.target.value)} /></Field>
               <Field label="Packs per carton" htmlFor="p-carton"><Input id="p-carton" type="number" min="1" value={draft.cartonSize} onChange={(e) => set('cartonSize', e.target.value)} /></Field>
               <Field label="Barcode" htmlFor="p-bar"><Input id="p-bar" value={draft.barcode} onChange={(e) => set('barcode', e.target.value)} /></Field>
-              <Field label="Selling price (naira)" htmlFor="p-price" error={errors.price} required><Input id="p-price" type="number" min="0" value={draft.price} onChange={(e) => set('price', e.target.value)} /></Field>
+              <Field label="Cost price per unit (naira)" htmlFor="p-cost"><Input id="p-cost" type="number" min="0" value={draft.cost} onChange={(e) => set('cost', e.target.value)} /></Field>
+              <Field label="Selling price per unit (naira)" htmlFor="p-price" error={errors.price} required><Input id="p-price" type="number" min="0" value={draft.price} onChange={(e) => set('price', e.target.value)} /></Field>
               <Field label="First batch number" htmlFor="p-batch"><Input id="p-batch" value={draft.batchNo} onChange={(e) => set('batchNo', e.target.value)} /></Field>
-              <Field label="Supplier" htmlFor="p-sup"><Input id="p-sup" value={draft.supplier} onChange={(e) => set('supplier', e.target.value)} /></Field>
+              <Field label="Supplier" htmlFor="p-sup"><Input id="p-sup" list="product-suppliers" value={draft.supplier} onChange={(e) => set('supplier', e.target.value)} /><datalist id="product-suppliers">{(suppliers || []).map((supplier) => <option key={supplier.id} value={supplier.name} />)}</datalist></Field>
               <Field label="Manufacturing date" htmlFor="p-mfg"><Input id="p-mfg" type="date" value={draft.mfgDate} max={draft.expiry || undefined} onChange={(e) => set('mfgDate', e.target.value)} /></Field>
               <Field label="Expiry date" htmlFor="p-exp" error={errors.expiry}><Input id="p-exp" type="date" min={draft.mfgDate || undefined} value={draft.expiry} onChange={(e) => set('expiry', e.target.value)} /></Field>
               <Field label="Quantity in stock" htmlFor="p-qty" hint="Low-stock alert starts at 25% of this. You can change it later."><Input id="p-qty" type="number" min="0" value={draft.quantity} onChange={(e) => set('quantity', e.target.value)} /></Field>
-              <Field label="Cost price per unit" htmlFor="p-cost"><Input id="p-cost" type="number" min="0" value={draft.cost} onChange={(e) => set('cost', e.target.value)} /></Field>
               <Field label="Prescription only" span2><Switch checked={draft.rx} onChange={(on) => set('rx', on)} label={draft.rx ? 'Requires prescription' : 'Over the counter'} /></Field>
               <Field label="Controlled drug" span2 hint="A pharmacist PIN is asked for before this drug is dispensed."><Switch checked={draft.controlled} onChange={(on) => set('controlled', on)} label={draft.controlled ? 'Controlled' : 'Not controlled'} /></Field>
               <Field label="Product image" span2 hint="Optional. Add a clear photo to help identify this product.">
@@ -437,6 +564,7 @@ export default function InventoryPage() {
                   {draft.image ? <img className="img-thumb-lg" src={draft.image} alt="Product preview" /> : <span className="img-thumb-lg placeholder"><Icon name="image" size={26} /></span>}
                   <div className="img-picker-actions">
                     <Button variant="ghost" size="sm" icon="image" onClick={() => fileRef.current?.click()}>{draft.image ? 'Change image' : 'Upload image'}</Button>
+                    {draft.image && <Button variant="quiet" size="sm" onClick={() => setDraft((current) => ({ ...current, image: '', imageBlob: null }))}>Remove image</Button>}
                     <input ref={fileRef} type="file" accept="image/*" hidden onChange={onPickImage} />
                   </div>
                 </div>

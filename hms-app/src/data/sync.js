@@ -1,6 +1,7 @@
 import { getDB } from './db'
 import { STORES } from './schema'
 import { dataBus } from './repository'
+import { LocalRepository } from './repository'
 
 // SyncEngine — replays the outbox to the server when online (§6). Ops drain in
 // insertion order and leave the outbox only after the server acks their opId;
@@ -169,8 +170,9 @@ export class SyncEngine {
         }
       }
       // Ordered read: getAll on an autoIncrement keyPath returns seq order.
-      let queue = await db.getAll('outbox')
       const staffIds = new Set((await db.getAll('staff')).filter((staff) => staff.hospitalId === tenantId).map((staff) => staff.id))
+      await this.syncPendingProductImages(db, tenantId)
+      let queue = await db.getAll('outbox')
 
       while (queue.length && tenantId) {
         const eligible = queue.filter((entry) => {
@@ -189,7 +191,7 @@ export class SyncEngine {
           entity: e.entity,
           op: e.op,
           recordId: e.recordId,
-          payload: e.payload,
+          payload: this.syncPayload(e.entity, e.payload),
         }))
 
         // Throws when offline / network error → caught below, ops stay queued.
@@ -245,6 +247,31 @@ export class SyncEngine {
     } finally {
       this.syncing = false
       await this.refreshPending()
+    }
+  }
+
+  syncPayload(entity, payload) {
+    if (!payload || entity !== 'products') return payload
+    const safePayload = { ...payload }
+    if (typeof safePayload.image === 'string' && safePayload.image.startsWith('data:')) safePayload.image = null
+    delete safePayload.imageBlob
+    return safePayload
+  }
+
+  async syncPendingProductImages(db, tenantId) {
+    if (!tenantId || !this.remote.configured || !this.online) return
+    const pending = (await db.getAll('meta')).filter((entry) => entry.key.startsWith(`inventory.pendingImage.${tenantId}.`))
+    for (const entry of pending) {
+      const { blob, productId } = entry.value || {}
+      if (!blob || !productId) continue
+      try {
+        const imageUrl = await this.remote.uploadProductImage(blob)
+        const repo = new LocalRepository({ hospitalId: tenantId, branchId: this.remote.backendBranchId })
+        await repo.update('products', productId, { image: imageUrl })
+        await db.delete('meta', entry.key)
+      } catch {
+        return
+      }
     }
   }
 
