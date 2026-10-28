@@ -35,7 +35,7 @@ async function loadBackendModules(remote) {
   try {
     const response = await remote.request(`${apiBase()}/tenant/modules`, { credentials: 'include', headers: {} })
     const result = await response.json().catch(() => ({}))
-    if (!response.ok) return null
+    if (!response.ok || !Array.isArray(result.modules)) return null
     return (result.modules || []).filter((module) => module.entitlementStatus === 'entitled' && module.activationStatus === 'enabled').map((module) => module.code)
   } catch { return null }
 }
@@ -289,7 +289,7 @@ export function AuthProvider({ children }) {
     let cancelled = false
     const refreshModules = async () => {
       const moduleCodes = await loadBackendModules(sync.remote)
-      if (cancelled) return
+      if (cancelled || moduleCodes == null) return
       setSession((previous) => {
         if (!previous || previous.moduleCodes?.length === moduleCodes.length && moduleCodes.every((code) => previous.moduleCodes.includes(code))) return previous
         const next = { ...previous, moduleCodes }
@@ -314,9 +314,10 @@ export function AuthProvider({ children }) {
         const result = await response.json().catch(() => ({}))
         if (!response.ok || cancelled) return
         const next = fromBackend(result)
-        next.moduleCodes = await loadBackendModules(sync.remote)
+        const moduleCodes = await loadBackendModules(sync.remote)
         setSession((previous) => {
           if (!previous || previous.userId !== next.userId) return previous
+          next.moduleCodes = moduleCodes ?? previous.moduleCodes ?? []
           if (previous.passwordChangeSkipped && next.mustChangePassword) next.passwordChangeSkipped = true
           const same = (left = [], right = []) => left.length === right.length && left.every((value) => right.includes(value))
           if (

@@ -2,6 +2,7 @@ import { createBrowserRouter } from 'react-router-dom'
 import { PERM } from '@/auth/permissions'
 import { RequireAuth, RequireTenant, RequirePerms, RequireModule, TenantIndexRedirect } from '@/auth/guards'
 import { AppShell } from '@/components'
+import RouteError from '@/components/RouteError'
 import Login from '@/pages/Login'
 import PasswordReset from '@/pages/PasswordReset'
 import ChangePassword from '@/pages/ChangePassword'
@@ -69,6 +70,7 @@ export const router = createBrowserRouter([{ element: <FeedbackLayerHms />, chil
         children: [
           {
             element: <AppShell />, // sidebar + topbar layout
+            errorElement: <RouteError />,
             children: [
               { index: true, element: <TenantIndexRedirect /> },
 
