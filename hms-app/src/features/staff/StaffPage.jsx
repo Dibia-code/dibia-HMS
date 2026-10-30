@@ -138,6 +138,14 @@ export default function StaffPage() {
       if (draft.pin) {
         if (!/^\d{4,6}$/.test(draft.pin)) throw new Error('The approval PIN must be 4 to 6 digits')
         const saved = draft.id || (await repo.findByIndex('staff', 'by_email', draft.email.trim().toLowerCase()))?.id
+        if (saved && backendAuthEnabled()) {
+          const response = await sync.remote.request(`${apiBase()}/staff/${encodeURIComponent(saved)}/approval-pin`, {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pin: draft.pin }),
+          })
+          const result = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(result.message || 'Could not update the pharmacy approval PIN')
+        }
         if (saved) await repo.setStaffPin(saved, draft.pin)
       }
       toast.success(draft.id ? 'Staff member updated' : 'Staff member added')
@@ -243,7 +251,7 @@ export default function StaffPage() {
                 <RoleChipPicker value={draft.roleSlugs} roles={assignableRoles} onChange={(slugs) => set('roleSlugs', slugs)} />
               </Field>
               {needsPin && (
-                <Field label="Approval PIN" htmlFor="s-pin" span2 hint={draft.id ? 'Leave empty to keep the current PIN. 4 to 6 digits.' : '4 to 6 digits. Used to approve controlled drugs.'}>
+                <Field label="Pharmacy approval PIN" htmlFor="s-pin" span2 hint={draft.id ? 'Leave empty to keep the current PIN. Used only for pharmacy approvals.' : '4 to 6 digits. Used only for pharmacy approvals, such as controlled drugs.'}>
                   <Input id="s-pin" type="password" inputMode="numeric" autoComplete="off" value={draft.pin} onChange={(e) => set('pin', e.target.value.replace(/\D/g, '').slice(0, 6))} />
                 </Field>
               )}

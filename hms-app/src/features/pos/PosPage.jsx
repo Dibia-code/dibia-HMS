@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { PERM } from '@/auth/permissions'
 import { useRepo } from '@/data/RepositoryContext'
@@ -145,7 +145,12 @@ export default function PosPage() {
   if (collectionBlocked) return <Card><SectionLabel>Pharmacy payments are disabled</SectionLabel><p className="text-muted">You can continue managing stock and dispensing prescriptions. Ask the hospital admin to enable pharmacy payment collection in Settings.</p></Card>
 
   return (
-    <div className="pos-grid">
+    <>
+      <div className="filter-chips mb-2" aria-label="Pharmacy work area">
+        {can(PERM.DISPENSE) && <Link className="filter-chip" to={`/${user.hospitalSlug}/dispensing`}>Dispensing</Link>}
+        {can(PERM.POS_SELL) && <Link className="filter-chip active" to={`/${user.hospitalSlug}/pos`}>Sell over the counter</Link>}
+      </div>
+      <div className="pos-grid">
       {/* Product picker */}
       <div>
         <div className="row wrap mb-2">
@@ -170,6 +175,7 @@ export default function PosPage() {
               const line = inCart.get(p.id)
               return (
                 <button key={p.id} type="button" className="product-tile" disabled={p.quantity <= 0} onClick={() => addToCart(p)}>
+                  {p.image && <img className="product-tile-image" src={p.image} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true }} />}
                   <div className="pname">
                     {p.name}
                     {p.rx && <span className="role-badge" style={{ marginLeft: 6 }}>Rx</span>}
@@ -248,6 +254,7 @@ export default function PosPage() {
           {busy ? 'Recording…' : `Complete sale · ${naira(subtotal)}`}
         </Button>
       </Card>
-    </div>
+      </div>
+    </>
   )
 }

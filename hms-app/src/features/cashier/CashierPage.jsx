@@ -276,7 +276,7 @@ export default function CashierPage() {
 
                   {method === 'hmo' && (
                     <div className={visit.hmo ? 'status-info settled-note' : 'status-crit settled-note'}>
-                      {visit.hmo ? `Billed to ${visit.hmo.scheme || 'HMO'} as a receivable. No cash is collected.` : 'No HMO cover was recorded at reception for this visit.'}
+                      {visit.hmo ? `This amount is billed to ${visit.hmo.scheme || 'HMO'} as a receivable. For a bill shared between HMO and cash, choose Split and enter each amount separately.` : 'No HMO cover was recorded at reception for this visit.'}
                     </div>
                   )}
 
@@ -304,8 +304,9 @@ export default function CashierPage() {
                           />
                         </div>
                       ))}
-                      <div className="row">
+                      <div className="row wrap">
                         <Button size="sm" variant="quiet" icon="plus" onClick={() => setSplit([...split, { method: 'transfer', amount: '' }])}>Add method</Button>
+                        {split.length > 1 && <Button size="sm" variant="ghost" onClick={() => { setMethod('cash'); setSplit([{ method: 'cash', amount: '' }, { method: 'pos', amount: '' }]) }}>Cancel split</Button>}
                         <span className="text-muted spacer">Entered {naira(splitTotal)} of {naira(collect)}</span>
                       </div>
                     </div>

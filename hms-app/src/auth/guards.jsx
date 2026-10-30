@@ -59,6 +59,7 @@ export function RequireModule({ code }) {
   const { user } = useAuth()
   const { hospitalSlug } = useParams()
   const backendEnabled = import.meta.env.PROD || import.meta.env.VITE_HMS_BACKEND_AUTH === 'true'
+  if (backendEnabled && !navigator.onLine && (!Array.isArray(user?.moduleCodes) || user.moduleCodes.length === 0)) return <Outlet />
   if (!backendEnabled || user?.moduleCodes?.includes(code)) return <Outlet />
   return (
     <section className="card" role="status">

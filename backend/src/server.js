@@ -356,6 +356,20 @@ app.get('/me', auth, asyncRoute(async (req, res) => {
   res.json(session(profile, tenant, branch, getBearer(req)))
 }))
 
+app.post('/staff/:staffId/approval-pin', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => {
+  const staff = await getStaff(req.auth.tenantId, req.params.staffId)
+  if (!staff) return apiError(res, 'Staff member not found in this hospital', 404)
+  const pin = String(req.body?.pin || '')
+  if (!/^\d{4,6}$/.test(pin)) return apiError(res, 'The pharmacy approval PIN must be 4 to 6 digits', 400)
+  const pinHash = sha256(`${staff.id}:${pin}`)
+  await transaction(async (client) => {
+    const saved = await client.query('update public.staff set pin_hash=$3,updated_at=now() where hospital_id=$1 and id=$2 returning updated_at as "updatedAt"', [req.auth.tenantId, staff.id, pinHash])
+    await appendSyncChange(client, req.auth.tenantId, 'staff', staff.id, 'update', { ...staff, pinHash, updatedAt: saved.rows[0].updatedAt }, req.auth.sub)
+  })
+  await recordAudit(req.auth.tenantId, req.auth.sub, 'staff.approval_pin_changed', 'staff', staff.id)
+  res.json({ message: 'Pharmacy approval PIN updated' })
+}))
+
 app.post('/staff/:staffId/password-reset', auth, requireRole('facility_admin','ceo_owner','super_admin'), asyncRoute(async (req, res) => {
   const staff = await getStaff(req.auth.tenantId, req.params.staffId)
   if (!staff) return apiError(res, 'Staff member not found in this hospital', 404)
@@ -603,7 +617,8 @@ app.post('/feedback', auth, asyncRoute(async (req, res) => {
     }
     throw error
   }
-  await recordAudit(req.auth.tenantId,req.auth.sub,'feedback.created','feedback_report',feedbackId)
+  try { await recordAudit(req.auth.tenantId,req.auth.sub,'feedback.created','feedback_report',feedbackId) }
+  catch (error) { console.error('Feedback report audit failed',{ requestId:req.requestId,...errorDiagnostics(error) }) }
   res.status(201).json({ feedback:{ id:feedbackId,hospitalId:req.auth.tenantId,createdBy:req.auth.sub,app:appName,text:body,category,priority,status:'Open',context,createdAt:now(),updatedAt:now(),updates:[] } })
 }))
 app.get('/feedback', auth, asyncRoute(async (req, res) => {
@@ -670,7 +685,8 @@ app.post('/feedback/messages', auth, asyncRoute(async (req, res) => {
   const messageId = id('feedback_message')
   await query('insert into public.feedback_messages (id,sender_hospital_id,recipient_hospital_id,sent_by,body) values ($1,$2,$3,$4,$5)', [messageId,req.auth.tenantId,recipientId,req.auth.sub,body])
   const sender = await getTenant(req.auth.tenantId)
-  await recordAudit(req.auth.tenantId,req.auth.sub,'feedback.message.sent','feedback_message',messageId,{ recipientHospitalId:recipientId })
+  try { await recordAudit(req.auth.tenantId,req.auth.sub,'feedback.message.sent','feedback_message',messageId,{ recipientHospitalId:recipientId }) }
+  catch (error) { console.error('Feedback message audit failed',{ requestId:req.requestId,...errorDiagnostics(error) }) }
   res.status(201).json({ message:{ id:messageId,senderHospitalId:req.auth.tenantId,senderHospital:sender?.name || '',recipientHospitalId:recipientId,recipientHospital:recipient.rows[0].name,sentBy:req.auth.sub,body,sentAt:now() } })
 }))
 app.get('/platform/messages', platformAuth, asyncRoute(async (_req, res) => { const result = await query('select m.id,m.hospital_id as "hospitalId",t.name as "hospitalName",m.sent_by as "sentBy",m.body,m.created_at as "sentAt" from public.platform_messages m join public.tenants t on t.id=m.hospital_id order by m.created_at desc limit 500'); res.json({ messages: result.rows.map((row) => ({ ...row, direction: 'outgoing' })) }) }))

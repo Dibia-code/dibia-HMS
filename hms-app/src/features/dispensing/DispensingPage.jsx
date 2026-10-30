@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { PERM } from '@/auth/permissions'
 import { useRepo } from '@/data/RepositoryContext'
@@ -207,6 +207,10 @@ export default function DispensingPage() {
 
   return (
     <>
+      <div className="filter-chips mb-2" aria-label="Pharmacy work area">
+        {can(PERM.DISPENSE) && <Link className="filter-chip active" to={`/${user.hospitalSlug}/dispensing`}>Dispensing</Link>}
+        {can(PERM.POS_SELL) && <Link className="filter-chip" to={`/${user.hospitalSlug}/pos`}>Sell over the counter</Link>}
+      </div>
       <div className="filter-chips mb-2">
         <button type="button" className={`filter-chip ${tab === 'queue' ? 'active' : ''}`} onClick={() => setTab('queue')}>Queue · {queue.length}</button>
         <button type="button" className={`filter-chip ${tab === 'done' ? 'active' : ''}`} onClick={() => setTab('done')}>Dispensed</button>

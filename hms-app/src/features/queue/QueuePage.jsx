@@ -18,6 +18,7 @@ export default function QueuePage() {
   const { config } = useHospital()
   const departments = routingDepartments(config)
   const canManage = can(PERM.QUEUE_MANAGE)
+  const pharmacyStaff = (user?.roles || []).some((role) => ['pharmacist', 'superintendent_pharmacist', 'pharmacy_cashier', 'dispenser', 'sales_staff'].includes(role))
 
   const { data: visits } = useLiveQuery(() => repo.list('visits'), [repo])
   const [admitting, setAdmitting] = useState(null)
@@ -28,9 +29,9 @@ export default function QueuePage() {
   const open = useMemo(
     () =>
       (visits || [])
-        .filter((v) => v.status !== 'closed')
+        .filter((v) => v.status !== 'closed' && (!pharmacyStaff || v.status === 'at_pharmacy'))
         .sort((a, b) => new Date(a.openedAt) - new Date(b.openedAt)),
-    [visits],
+    [visits, pharmacyStaff],
   )
 
   usePageHeader(
