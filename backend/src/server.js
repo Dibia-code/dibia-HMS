@@ -660,13 +660,13 @@ app.get('/feedback/recipients', auth, asyncRoute(async (req, res) => {
 }))
 app.get('/feedback/messages', auth, asyncRoute(async (req, res) => {
   const result = await query(`
-    select m.id,m.sender_hospital_id as "senderHospitalId",s.name as "senderHospital",m.recipient_hospital_id as "recipientHospitalId",r.name as "recipientHospital",m.sent_by as "sentBy",m.body,m.created_at as "sentAt"
+    select m.id,m.sender_hospital_id as "senderHospitalId",s.name as "senderHospital",m.recipient_hospital_id as "recipientHospitalId",r.name as "recipientHospital",m.sent_by as "sentBy",m.body,m.created_at as "sentAt",case when m.sender_hospital_id=$1 then 'outgoing' else 'incoming' end as direction
     from public.feedback_messages m
     join public.tenants s on s.id=m.sender_hospital_id
     join public.tenants r on r.id=m.recipient_hospital_id
     where m.sender_hospital_id=$1 or m.recipient_hospital_id=$1
     union all
-    select m.id,null::text as "senderHospitalId",'Dibia Console'::text as "senderHospital",m.hospital_id as "recipientHospitalId",t.name as "recipientHospital",m.sent_by as "sentBy",m.body,m.created_at as "sentAt"
+    select m.id,null::text as "senderHospitalId",'Dibia Console'::text as "senderHospital",m.hospital_id as "recipientHospitalId",t.name as "recipientHospital",m.sent_by as "sentBy",m.body,m.created_at as "sentAt",'incoming'::text as direction
     from public.platform_messages m
     join public.tenants t on t.id=m.hospital_id
     where m.hospital_id=$1
